@@ -20,6 +20,9 @@ let batteryInterval = null;
 let firmwareVersion = null;
 
 const RECONNECT_DELAY_MS = 5000;
+const CONNECT_TIMEOUT_MS = 10000;
+const DISCOVER_TIMEOUT_MS = 10000;
+const SCAN_WATCHDOG_MS = 60000;
 
 /** Log battery level with timestamp to battery.log every N ms */
 const BATTERY_LOG_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
@@ -117,6 +120,11 @@ function volumeBarMatrix(normalized0to1) {
 }
 
 // --- BLE discovery and connection ---
+//
+// Connection state machine: idle -> scanning -> connecting -> discovering -> connected
+// `connState` is the single source of truth for where we are. Every path that can
+// end the current attempt (timeout, error, real disconnect, BT power-off) funnels
+// through cleanupConnection() + scheduleRescan(), so nothing is ever a dead end.
 
 const LED_MATRIX_SERVICE_UUID = 'f29b1523cb1940f3be5c7241ecb82fd1';
 const LED_MATRIX_CHAR_UUID = 'f29b1524cb1940f3be5c7241ecb82fd1';
@@ -128,90 +136,163 @@ const NUIMO_INPUT_UUIDS = [
     'f29b1528cb1940f3be5c7241ecb82fd2',  // rotation
 ];
 
+let connState = 'idle';
+let currentDevice = null;
+let rescanTimer = null;
+let scanWatchdogTimer = null;
+let subscribedCharacteristics = []; // [{ ch, listener }] — for teardown on disconnect
 
 function normaliseUuid(uuid) {
     return String(uuid).replace(/-/g, '').toLowerCase();
 }
 
-async function initialiseNuimo() {
-    let scanTimer = null;
+/** Cancel any pending scan-watchdog timer. */
+function clearScanWatchdog() {
+    if (scanWatchdogTimer) {
+        clearTimeout(scanWatchdogTimer);
+        scanWatchdogTimer = null;
+    }
+}
 
-    noble.on('stateChange', function (state) {
-        console.log('Bluetooth:', state);
-        if (state === 'poweredOn') {
-            // Delay scan slightly — gives peripheral time to detect the
-            // disconnection (e.g. after laptop sleep/wake) and start advertising
-            scanTimer = setTimeout(start, 3000);
-        } else {
-            // Cancel any pending scan — BT went away before the timer fired
-            if (scanTimer) { clearTimeout(scanTimer); scanTimer = null; }
-            // Clean up stale connection state
-            if (ledCharacteristic) {
-                ledCharacteristic = null;
-                clearInterval(batteryInterval);
-                batteryInterval = null;
-                emitter.emit('disconnect');
-                console.log('Bluetooth unavailable — connection cleared');
-            }
-        }
-    });
+/** Arm a watchdog that restarts scanning if nothing is found for a while. */
+function armScanWatchdog() {
+    clearScanWatchdog();
+    scanWatchdogTimer = setTimeout(() => {
+        scanWatchdogTimer = null;
+        if (connState !== 'scanning') return;
+        console.log('Scan watchdog: no device found in', SCAN_WATCHDOG_MS / 1000, 's — restarting scan');
+        noble.stopScanningAsync().catch(() => {}).then(() => {
+            connState = 'idle';
+            startScan();
+        });
+    }, SCAN_WATCHDOG_MS);
+}
 
-    noble.on('discover', function (discovered) {
-        if (discovered.advertisement.localName === 'Nuimo') {
-            console.log('Nuimo found:', discovered.id);
-            noble.stopScanning();
-            connect(discovered);
-        }
-    });
+/**
+ * Schedule a rescan after a delay. Idempotent — calling this repeatedly while
+ * a rescan is already pending has no extra effect (no stacked timers).
+ */
+function scheduleRescan(delayMs = RECONNECT_DELAY_MS) {
+    if (rescanTimer) return;
+    rescanTimer = setTimeout(() => {
+        rescanTimer = null;
+        startScan();
+    }, delayMs);
+}
 
-    async function start() {
-        if (noble.state !== 'poweredOn') {
-            console.log('Scan skipped — BT state is', noble.state);
-            return;
-        }
-        try {
-            await noble.startScanningAsync();
-            console.log('Scanning for Nuimo...');
-        } catch (e) {
-            console.log('Scan error:', e.message);
-        }
+/**
+ * Tear down everything associated with the current/attempted connection:
+ * battery poller, input listeners, the device's own disconnect listener.
+ * Emits 'disconnect' exactly once per established connection attempt
+ * (i.e. only if we actually had a device to tear down).
+ */
+function cleanupConnection() {
+    if (batteryInterval) {
+        clearInterval(batteryInterval);
+        batteryInterval = null;
+    }
+    for (const { ch, listener } of subscribedCharacteristics) {
+        try { ch.removeListener('data', listener); } catch (_) {}
+    }
+    subscribedCharacteristics = [];
+
+    const hadConnection = currentDevice !== null;
+    if (currentDevice) {
+        try { currentDevice.removeListener('disconnect', onDeviceDisconnect); } catch (_) {}
+    }
+    ledCharacteristic = null;
+    currentDevice = null;
+
+    if (hadConnection) emitter.emit('disconnect');
+}
+
+function onDeviceDisconnect() {
+    console.log('Nuimo disconnected. Reconnecting in', RECONNECT_DELAY_MS / 1000, 's...');
+    cleanupConnection();
+    connState = 'idle';
+    scheduleRescan();
+}
+
+async function startScan() {
+    if (noble.state !== 'poweredOn') {
+        console.log('Scan skipped — BT state is', noble.state);
+        connState = 'idle';
+        return;
+    }
+    // Single-flight guard: don't stack scans on top of an attempt in progress.
+    if (connState === 'scanning' || connState === 'connecting' || connState === 'discovering') {
+        return;
+    }
+    connState = 'scanning';
+    try {
+        await noble.startScanningAsync();
+        console.log('Scanning for Nuimo...');
+        armScanWatchdog();
+    } catch (e) {
+        console.log('Scan error:', e.message);
+        connState = 'idle';
+        scheduleRescan();
+    }
+}
+
+async function connect(device) {
+    connState = 'connecting';
+    currentDevice = device;
+    console.log('Connecting to Nuimo...');
+    try {
+        await Promise.race([
+            device.connectAsync(),
+            new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Connect timeout (10s)')), CONNECT_TIMEOUT_MS)
+            )
+        ]);
+        console.log('Connected. Discovering services...');
+    } catch (e) {
+        console.error('Connect failed:', e.message);
+        // The underlying BLE connect may complete after we gave up waiting on
+        // it — disconnect defensively so it can't linger as a zombie that's
+        // connected but never discovered/subscribed (a connected peripheral
+        // stops advertising, so a zombie is invisible to the next scan too).
+        device.disconnectAsync().catch(() => {});
+        currentDevice = null;
+        connState = 'idle';
+        scheduleRescan();
+        return;
     }
 
-    const CONNECT_TIMEOUT_MS = 10000;
-    const DISCOVER_TIMEOUT_MS = 10000;
+    // Attach the disconnect handler immediately — before discovery — so a
+    // drop mid-discovery is never missed.
+    device.once('disconnect', onDeviceDisconnect);
 
-    async function connect(device) {
-        console.log('Connecting to Nuimo...');
-        try {
-            await Promise.race([
-                device.connectAsync(),
-                new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('Connect timeout (10s)')), CONNECT_TIMEOUT_MS)
-                )
-            ]);
-            console.log('Connected. Discovering services...');
-        } catch (e) {
-            console.error('Connect failed:', e.message);
-            return;
-        }
+    connState = 'discovering';
+    let services;
+    try {
+        services = await Promise.race([
+            device.discoverServicesAsync(),
+            new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Service discovery timeout (10s)')), DISCOVER_TIMEOUT_MS)
+            )
+        ]);
+        console.log('Services found:', services.length);
+    } catch (e) {
+        console.error('Service discovery failed:', e.message);
+        cleanupConnection();
+        device.disconnectAsync().catch(() => {});
+        connState = 'idle';
+        scheduleRescan();
+        return;
+    }
 
-        let services;
-        try {
-            services = await Promise.race([
-                device.discoverServicesAsync(),
-                new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('Service discovery timeout (10s)')), DISCOVER_TIMEOUT_MS)
-                )
-            ]);
-            console.log('Services found:', services.length);
-        } catch (e) {
-            console.error('Service discovery failed:', e.message);
-            return;
-        }
-
+    try {
         for (const service of services) {
             const serviceUuid = normaliseUuid(service.uuid);
-            const characteristics = await service.discoverCharacteristicsAsync();
+            let characteristics;
+            try {
+                characteristics = await service.discoverCharacteristicsAsync();
+            } catch (e) {
+                console.log('Characteristic discovery error:', e.message);
+                continue;
+            }
             if (config.debug) console.log('Service:', serviceUuid, '— characteristics:', characteristics.map(c => normaliseUuid(c.uuid) + '[' + c.properties.join(',') + ']').join(', '));
 
             for (const ch of characteristics) {
@@ -242,9 +323,13 @@ async function initialiseNuimo() {
 
                 // Battery level
                 if (uuid === '2a19') {
-                    const battery = await ch.readAsync();
-                    batteryLevel = battery[0];
-                    logBattery(batteryLevel);
+                    try {
+                        const battery = await ch.readAsync();
+                        batteryLevel = battery[0];
+                        logBattery(batteryLevel);
+                    } catch (e) {
+                        console.log('Battery read error:', e.message);
+                    }
                     batteryInterval = setInterval(async () => {
                         try {
                             const b = await ch.readAsync();
@@ -274,7 +359,7 @@ async function initialiseNuimo() {
                         continue;
                     }
                     const charUuid = normaliseUuid(ch.uuid);
-                    ch.on('data', function (data) {
+                    const listener = function (data) {
                         if (config.debug) {
                             const hex = [...data].map(b => b.toString(16).padStart(2, '0')).join(' ');
                             console.log('DATA', charUuid.slice(-8), '[' + hex + ']');
@@ -303,27 +388,60 @@ async function initialiseNuimo() {
                             const direction = data.readInt16LE(0) > 0 ? 1 : -1;
                             emitter.emit('rotate', direction);
                         }
-                    });
+                    };
+                    ch.on('data', listener);
+                    subscribedCharacteristics.push({ ch, listener });
                 }
             }
         }
-
-        device.once('disconnect', function () {
-            console.log('Nuimo disconnected. Reconnecting in', RECONNECT_DELAY_MS / 1000, 's...');
-            ledCharacteristic = null;
-            clearInterval(batteryInterval);
-            batteryInterval = null;
-            emitter.emit('disconnect');
-            setTimeout(() => {
-                // Only scan if BT is powered on — if not, stateChange→poweredOn will call start()
-                if (noble.state === 'poweredOn') {
-                    noble.startScanningAsync().catch(e => console.log('Scan error:', e.message));
-                } else {
-                    console.log('BT not ready, scan deferred until poweredOn');
-                }
-            }, RECONNECT_DELAY_MS);
-        });
+    } catch (e) {
+        console.error('Setup failed after service discovery:', e.message);
+        cleanupConnection();
+        device.disconnectAsync().catch(() => {});
+        connState = 'idle';
+        scheduleRescan();
+        return;
     }
+
+    connState = 'connected';
+    console.log('Nuimo fully connected.');
+}
+
+function initialiseNuimo() {
+    noble.on('stateChange', function (state) {
+        console.log('Bluetooth:', state);
+        if (state === 'poweredOn') {
+            if (rescanTimer) { clearTimeout(rescanTimer); rescanTimer = null; }
+            // Delay scan slightly — gives peripheral time to detect the
+            // disconnection (e.g. after laptop sleep/wake) and start advertising
+            setTimeout(startScan, 3000);
+        } else {
+            // Cancel any pending scan/rescan — BT went away before it could run
+            clearScanWatchdog();
+            if (rescanTimer) { clearTimeout(rescanTimer); rescanTimer = null; }
+            const wasActive = connState !== 'idle' || currentDevice !== null;
+            cleanupConnection();
+            connState = 'idle';
+            if (wasActive) console.log('Bluetooth unavailable — connection cleared');
+        }
+    });
+
+    noble.on('discover', function (discovered) {
+        if (connState !== 'scanning') return; // single-flight guard — ignore stray results
+        if (discovered.advertisement.localName === 'Nuimo') {
+            console.log('Nuimo found:', discovered.id);
+            clearScanWatchdog();
+            noble.stopScanningAsync().catch(e => console.log('Stop scan error:', e.message));
+            connect(discovered).catch(e => {
+                // Should not happen (connect() handles its own errors internally),
+                // but never let a stray rejection become an unhandled one.
+                console.error('Unexpected error in connect():', e.message);
+                cleanupConnection();
+                connState = 'idle';
+                scheduleRescan();
+            });
+        }
+    });
 }
 
 // --- Public API ---

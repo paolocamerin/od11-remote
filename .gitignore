@@ -15,3 +15,6 @@ config.local.js
 speaker.log
 symbol-log.txt
 battery.log
+
+# Handoff doc for a future build session — not part of the shipped app
+PLAN.md
