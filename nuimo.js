@@ -71,7 +71,13 @@ async function writeMatrix(ch, matrixArray, brightness = 0xff, timeoutMs = 25500
     buf[11] = brightness;
     buf[12] = Math.min(255, Math.floor(timeoutMs / 100));
 
-    await ch.writeAsync(buf, true);
+    try {
+        await ch.writeAsync(buf, true);
+    } catch (e) {
+        // A failed LED frame is cosmetic, not fatal — don't let a write that
+        // races a disconnect become an unhandled rejection.
+        if (config.debug) console.log('LED write failed (ignored):', e.message);
+    }
 }
 
 /**
@@ -444,6 +450,23 @@ function initialiseNuimo() {
     });
 }
 
+/**
+ * Best-effort cleanup for graceful process shutdown: cancels pending
+ * timers and disconnects the Nuimo peripheral (if connected). Disconnecting
+ * lets it start re-advertising immediately instead of the next launch
+ * having to wait out a stale BLE supervision timeout.
+ */
+async function shutdown() {
+    if (rescanTimer) { clearTimeout(rescanTimer); rescanTimer = null; }
+    clearScanWatchdog();
+    const device = currentDevice;
+    cleanupConnection(); // removes device's own disconnect listener before we disconnect it
+    connState = 'idle';
+    if (device) {
+        try { await device.disconnectAsync(); } catch (_) {}
+    }
+}
+
 // --- Public API ---
 
 const MATRIX_TIMEOUT_MS = 1000;
@@ -489,7 +512,11 @@ async function setBuiltinSymbol(index) {
     buf[10] = 0x30;  // onion skinning + BUILTIN_MATRIX
     buf[11] = 0xff;
     buf[12] = 20;  // 2s
-    await ledCharacteristic.writeAsync(buf, true);
+    try {
+        await ledCharacteristic.writeAsync(buf, true);
+    } catch (e) {
+        if (config.debug) console.log('LED write failed (ignored):', e.message);
+    }
 
     const line = `${index}\t${buf.toString('hex')}\t${new Date().toISOString()}\t\n`;
     fs.appendFileSync(path.join(__dirname, 'symbol-log.txt'), line);
@@ -510,4 +537,4 @@ function getFirmwareVersion() {
     return firmwareVersion;
 }
 
-module.exports = { initialiseNuimo, emitter, setVolumeBar, setVolumeNumber, setMatrix, getBatteryLevel, setBuiltinSymbol, getFirmwareVersion };
+module.exports = { initialiseNuimo, emitter, setVolumeBar, setVolumeNumber, setMatrix, getBatteryLevel, setBuiltinSymbol, getFirmwareVersion, shutdown };

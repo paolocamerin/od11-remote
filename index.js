@@ -17,6 +17,30 @@ const speaker = require('./speaker');
 const config = require('./config');
 const { PATTERNS, PATTERNS_BY_NAME } = require('./patterns');
 
+// ── Crash-proofing / shutdown ─────────────────────────────────────────────
+// Belt-and-suspenders on top of nuimo.js's/speaker.js's own try/catch —
+// if anything still slips through, log it and keep running rather than
+// let Node kill the process.
+process.on('unhandledRejection', (err) => {
+    console.error('Unhandled rejection:', err && err.stack ? err.stack : err);
+});
+
+let shuttingDown = false;
+function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log('\nReceived', signal, '— shutting down...');
+    speaker.shutdown();
+    nuimo.shutdown()
+        .catch((e) => console.log('Shutdown error:', e.message))
+        .finally(() => process.exit(0));
+    // Safety net in case BLE disconnect hangs — don't block a restart forever.
+    setTimeout(() => process.exit(0), 3000).unref();
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+
 nuimo.initialiseNuimo();
 speaker.initialiseSpeaker();
 

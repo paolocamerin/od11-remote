@@ -19,6 +19,7 @@ let pingInterval = null;
 let isPlaying = false;
 let currentSourceId = null;
 let sourcesMap = {};
+let isShuttingDown = false;
 
 const RECONNECT_DELAY_MS = 5000;
 
@@ -98,9 +99,13 @@ function connect() {
     });
 
     socket.on('close', function () {
-        console.log('Disconnected from speaker. Reconnecting in', RECONNECT_DELAY_MS / 1000, 's...');
         clearInterval(pingInterval);
         pingInterval = null;
+        if (isShuttingDown) {
+            console.log('Disconnected from speaker (shutdown).');
+            return;
+        }
+        console.log('Disconnected from speaker. Reconnecting in', RECONNECT_DELAY_MS / 1000, 's...');
         setTimeout(connect, RECONNECT_DELAY_MS);
     });
 }
@@ -225,4 +230,16 @@ function canCurrentSourcePause() {
     return src ? src.supports_pause !== false : true;
 }
 
-module.exports = { initialiseSpeaker, changeVolume, getVolume, getIsPlaying, togglePlayPause, setInputSource, getSources, getCurrentSourceId, canCurrentSourcePause, speakerEmitter };
+/**
+ * Best-effort cleanup for graceful process shutdown: stops the keepalive
+ * ping and closes the socket without scheduling a reconnect.
+ */
+function shutdown() {
+    isShuttingDown = true;
+    if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
+    if (socket) {
+        try { socket.close(); } catch (_) {}
+    }
+}
+
+module.exports = { initialiseSpeaker, changeVolume, getVolume, getIsPlaying, togglePlayPause, setInputSource, getSources, getCurrentSourceId, canCurrentSourcePause, speakerEmitter, shutdown };
