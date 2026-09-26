@@ -2,7 +2,9 @@
  * OD-11 speaker WebSocket client.
  * Connects to the speaker, parses volume from state updates, and exposes
  * getVolume() and changeVolume(). Does not change volume unless changeVolume() is called.
- * Automatically reconnects on disconnect.
+ * Automatically reconnects on disconnect. With several IPs (a speaker group), any
+ * member can control the whole group, so it falls back to the next IP when one is
+ * unreachable, and learns other members' IPs from the speaker's own group state.
  */
 
 const ws = require('ws');
@@ -21,14 +23,33 @@ let currentSourceId = null;
 let sourcesMap = {};
 let isShuttingDown = false;
 
+/** IPs to try, in order: configured ones first, then any learned from the group. */
+const candidateIps = [...config.speakerIps];
+let ipIndex = 0;
+/** Failed connection attempts since the last successful one. */
+let failedAttempts = 0;
+
 const RECONNECT_DELAY_MS = 5000;
+const HANDSHAKE_TIMEOUT_MS = 5000;
+/**
+ * The speaker answers every ping with speaker_pong. Counting unanswered pings (rather
+ * than timing silence) keeps a busy event loop — e.g. during BLE connects — from
+ * looking like a dead link, since queued replies reset the count before the next ping.
+ */
+const MAX_UNANSWERED_PINGS = 3;
+let unansweredPings = 0;
 
 function connect() {
-    socket = new ws.WebSocket(`ws://${config.speakerIp}/ws`);
+    const ip = candidateIps[ipIndex];
+    let opened = false;
+    socket = new ws.WebSocket(`ws://${ip}/ws`, { handshakeTimeout: HANDSHAKE_TIMEOUT_MS });
     const uid = 'uid-' + Math.floor(1e8 * Math.random());
 
     socket.on('open', function () {
-        console.log('Connected to speaker!');
+        opened = true;
+        failedAttempts = 0;
+        unansweredPings = 0;
+        console.log('Connected to speaker at', ip);
 
         // Join global and group to receive state updates
         socket.send(JSON.stringify({
@@ -44,8 +65,15 @@ function connect() {
             action: 'group_join'
         }));
 
-        // Keep connection alive
+        // Keep connection alive, and drop it if the speaker has gone silent
+        // (e.g. lost power without closing the socket) so we fail over.
         pingInterval = setInterval(() => {
+            if (unansweredPings >= MAX_UNANSWERED_PINGS) {
+                console.log('Speaker at', ip, 'stopped answering (' + unansweredPings + ' pings) — dropping connection');
+                socket.terminate();
+                return;
+            }
+            unansweredPings++;
             socket.send(JSON.stringify({
                 value: (new Date()).getTime() % 1e6,
                 action: 'speaker_ping'
@@ -54,6 +82,7 @@ function connect() {
     });
 
     socket.on('message', function (data) {
+        unansweredPings = 0;
         let msg;
         try {
             msg = JSON.parse(data.toString());
@@ -76,10 +105,12 @@ function connect() {
                     }
                 }
             }
+            if (item && item.speaker) learnSpeakerIp(item.speaker);
             // Initial state inside group_joined.state[] and global_joined.state[]
             if (item && Array.isArray(item.state)) {
                 for (const stateItem of item.state) {
                     if (stateItem && stateItem.update) parseUpdate(stateItem);
+                    if (stateItem && stateItem.speaker) learnSpeakerIp(stateItem.speaker);
                 }
                 // Print a summary once the group state is fully parsed
                 if (item.response === 'group_joined') {
@@ -95,7 +126,7 @@ function connect() {
     });
 
     socket.on('error', function (err) {
-        console.log('Speaker WebSocket error:', err.message);
+        console.log('Speaker WebSocket error (' + ip + '):', err.message);
     });
 
     socket.on('close', function () {
@@ -105,9 +136,34 @@ function connect() {
             console.log('Disconnected from speaker (shutdown).');
             return;
         }
-        console.log('Disconnected from speaker. Reconnecting in', RECONNECT_DELAY_MS / 1000, 's...');
-        setTimeout(connect, RECONNECT_DELAY_MS);
+        if (opened) {
+            speakerEmitter.emit('disconnected');
+            // A working connection dropped — retry the same speaker first.
+            console.log('Disconnected from speaker at', ip + '. Reconnecting in', RECONNECT_DELAY_MS / 1000, 's...');
+            setTimeout(connect, RECONNECT_DELAY_MS);
+            return;
+        }
+        // Couldn't reach this speaker — move straight on to the next one, and only
+        // pause once every known IP has failed in a row.
+        failedAttempts++;
+        ipIndex = (ipIndex + 1) % candidateIps.length;
+        if (failedAttempts % candidateIps.length === 0) {
+            console.log('No speaker reachable (tried ' + candidateIps.join(', ') + '). Retrying in', RECONNECT_DELAY_MS / 1000, 's...');
+            setTimeout(connect, RECONNECT_DELAY_MS);
+        } else {
+            setImmediate(connect);
+        }
     });
+}
+
+/**
+ * Remember a group member's IP (from the speaker's own group state) as a fallback.
+ */
+function learnSpeakerIp(speakerInfo) {
+    const ip = speakerInfo && speakerInfo.ip;
+    if (typeof ip !== 'string' || !ip || candidateIps.includes(ip)) return;
+    candidateIps.push(ip);
+    console.log('Learned group speaker', speakerInfo.box_serial || '', 'at', ip, '— added as fallback');
 }
 
 function parseUpdate(item) {
@@ -136,7 +192,7 @@ function parseUpdate(item) {
  * Initialise the speaker WebSocket connection.
  */
 function initialiseSpeaker() {
-    console.log('Speaker IP:', config.speakerIp);
+    console.log('Speaker IP' + (candidateIps.length > 1 ? 's' : '') + ':', candidateIps.join(', '));
     connect();
 }
 
@@ -153,6 +209,14 @@ function changeVolume(amount) {
         amount: amount,
         action: 'group_change_volume'
     }));
+}
+
+/**
+ * Whether the speaker WebSocket is currently open.
+ * @returns {boolean}
+ */
+function isConnected() {
+    return !!socket && socket.readyState === ws.OPEN;
 }
 
 /**
@@ -242,4 +306,4 @@ function shutdown() {
     }
 }
 
-module.exports = { initialiseSpeaker, changeVolume, getVolume, getIsPlaying, togglePlayPause, setInputSource, getSources, getCurrentSourceId, canCurrentSourcePause, speakerEmitter, shutdown };
+module.exports = { initialiseSpeaker, changeVolume, isConnected, getVolume, getIsPlaying, togglePlayPause, setInputSource, getSources, getCurrentSourceId, canCurrentSourcePause, speakerEmitter, shutdown };

@@ -1,6 +1,8 @@
 /**
  * Application configuration.
- * Speaker IP: use --ip=192.168.0.101 when running, or create config.local.js (gitignored).
+ * Speaker IP(s): use --ip=192.168.0.101 when running, or create config.local.js (gitignored).
+ * For a speaker group, pass every member: --ip=192.168.0.101,192.168.0.100 — any member can
+ * control the group, so the app falls back to the next IP when one is unreachable.
  * Battery logging: use --battery-log to enable writing battery readings to battery.log.
  */
 const args = process.argv.slice(2);
@@ -17,22 +19,29 @@ function hasFlag(name) {
     return args.includes(name);
 }
 
-function getSpeakerIp() {
-    const ip = getArg('--ip');
-    if (ip) return ip;
-    try {
-        const local = require('./config.local');
-        if (local && local.speakerIp) return local.speakerIp;
-    } catch (_) {}
-    return null;
+function parseIpList(value) {
+    const list = Array.isArray(value) ? value : String(value).split(',');
+    return list.map((ip) => String(ip).trim()).filter(Boolean);
 }
 
-const speakerIp = getSpeakerIp();
-if (!speakerIp) {
-    console.error('Usage: node index.js --ip=192.168.0.101 [--battery-log]');
-    console.error('   or: create config.local.js with module.exports = { speakerIp: "192.168.0.101" }');
+function getSpeakerIps() {
+    const ip = getArg('--ip');
+    if (ip) return parseIpList(ip);
+    try {
+        const local = require('./config.local');
+        if (local && local.speakerIps) return parseIpList(local.speakerIps);
+        if (local && local.speakerIp) return parseIpList(local.speakerIp);
+    } catch (_) {}
+    return [];
+}
+
+const speakerIps = getSpeakerIps();
+if (speakerIps.length === 0) {
+    console.error('Usage: node index.js --ip=192.168.0.101[,192.168.0.100] [--battery-log]');
+    console.error('   or: create config.local.js with module.exports = { speakerIps: ["192.168.0.101", "192.168.0.100"] }');
     process.exit(1);
 }
+const speakerIp = speakerIps[0];
 
 const batteryLog = hasFlag('--battery-log');
 const debug = hasFlag('--debug');
@@ -46,4 +55,4 @@ for (const arg of args) {
     }
 }
 
-module.exports = { speakerIp, batteryLog, debug, atvName };
+module.exports = { speakerIp, speakerIps, batteryLog, debug, atvName };

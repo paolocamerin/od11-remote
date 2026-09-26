@@ -42,6 +42,12 @@ Or with a space:
 node index.js --ip 192.168.0.101
 ```
 
+If you have several speakers in a group, list them all, comma-separated. Any member can control the whole group, so if one is unreachable the app moves on to the next. It also picks up other group members' IPs from the speaker itself:
+
+```bash
+node index.js --ip=192.168.0.101,192.168.0.100
+```
+
 **Option B: Local config file**
 
 Copy `config.example.js` to `config.local.js` and set your speaker IP:
