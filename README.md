@@ -1,208 +1,145 @@
 # OD-11 Remote
 
-Control an **OD-11 speaker** via a **Senic Nuimo** controller over Bluetooth. Volume, battery display, and LED feedback.
+Control a **Teenage Engineering OD-11** speaker (or a grouped pair) with a **Senic Nuimo** controller. Turn the Nuimo to change the volume, press it to play/pause, and read the volume on its LED display.
 
-## Prerequisites
+Designed to run unattended on a Raspberry Pi, but works on any machine with Bluetooth LE and Node.js.
 
-- **Node.js** (v14 or later)
-- **Nuimo** controller (powered on, in range)
-- **OD-11 speaker** on the same network
-- **Bluetooth** (built-in or USB adapter)
+## How it works
 
-## Setup
-
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/YOUR_USERNAME/OD11-remote.git
-cd OD11-remote
+```
+Nuimo  ──Bluetooth LE──►  od11-remote (Pi)  ──WebSocket──►  OD-11 speaker(s)
 ```
 
-### 2. Install dependencies
+- **Nuimo side:** the app finds the Nuimo over Bluetooth, subscribes to its rotate/press/touch events, and draws numbers and icons on its 9×9 LED matrix. If the Nuimo drops out (battery, range, Bluetooth hiccup), the app keeps rescanning and reconnects by itself.
+- **Speaker side:** the app connects to the speaker's local WebSocket (`ws://<speaker-ip>/ws`, the same one the Orthoplay app uses), receives volume/playback updates, and sends volume changes.
+- **Speaker groups:** in a stereo pair, either speaker controls the whole group. List both IPs and the app uses whichever one answers. It also learns the other group members' IPs from the speaker itself. If a speaker stops responding, the app notices within ~20 s and moves on to the next one.
+
+### What the number on the Nuimo means
+
+- While you turn, the number updates instantly. Shortly after you stop, it corrects itself to the speaker's **real** volume. If it jumps back, the speaker didn't take the change.
+- **No number (✕ instead) means no speaker is connected.** The volume is only shown once a speaker has reported it.
+
+## Controls
+
+| Action | Result |
+|---|---|
+| **Rotate** | Volume up/down (shows ✕ if no speaker is connected) |
+| **Short press** | Play/pause. After 5 min idle, the first press only wakes the display (◆) |
+| **Long press** (≥ 0.6 s) | Show Nuimo battery icon, then battery % |
+| **Touch / swipe / fly** | Shows a feedback icon (no action yet) |
+
+Play/pause only works for sources that support it (AirPlay, Spotify, Playlist). On Line in / Optical, a press shows **?**.
+
+## Requirements
+
+**Hardware**
+- An OD-11 speaker, or two in a group, on your local network. Give them **static IPs** (or DHCP reservations) so the addresses don't change.
+- A Senic Nuimo, charged and not connected to another device (e.g. the Senic hub or a phone).
+- A computer with Bluetooth LE, within range of the Nuimo and on the same network as the speakers. A Raspberry Pi 3/4/5 or Zero 2 W with built-in Bluetooth works well.
+
+**Software**
+- Node.js 18 or later (tested on 20)
+- On Linux / Raspberry Pi OS, BlueZ plus build tools, since the Bluetooth library compiles a native module:
+  ```bash
+  sudo apt install bluetooth bluez libbluetooth-dev libudev-dev build-essential
+  ```
+- On macOS, grant Bluetooth permission to your terminal when prompted.
+
+## Install
+
+### 1. Get the code
 
 ```bash
+git clone https://github.com/paolocamerin/od11-remote.git
+cd od11-remote
 npm install
 ```
 
-### 3. Configure the speaker IP
+### 2. Allow Node to use Bluetooth (Linux only)
 
-You must provide your speaker’s IP address. Two options:
-
-**Option A: Command-line (recommended)**
-
-Pass the IP when you run the app:
-
-```bash
-node index.js --ip=192.168.0.101
-```
-
-Or with a space:
-
-```bash
-node index.js --ip 192.168.0.101
-```
-
-If you have several speakers in a group, list them all, comma-separated. Any member can control the whole group, so if one is unreachable the app moves on to the next. It also picks up other group members' IPs from the speaker itself:
-
-```bash
-node index.js --ip=192.168.0.101,192.168.0.100
-```
-
-**Option B: Local config file**
-
-Copy `config.example.js` to `config.local.js` and set your speaker IP:
-
-```bash
-cp config.example.js config.local.js
-# Edit config.local.js and set speakerIp to your speaker's IP
-```
-
-`config.local.js` is gitignored, so it won’t be committed.
-
-## Running the program
-
-1. Turn on the Nuimo and place it near your computer or Raspberry Pi.
-2. Ensure the OD-11 speaker is on and connected to your network.
-3. Run:
-
-```bash
-node index.js --ip=YOUR_SPEAKER_IP
-```
-
-Example:
-
-```bash
-node index.js --ip=192.168.0.101
-```
-
-### Expected output
-
-```
-Bluetooth: poweredOn
-Scanning for Nuimo...
-Nuimo found: f2a6470ee3fa
-Connecting to Nuimo...
-Connected. Discovering services...
-Services found: 8
-Battery: 85 %
-Nuimo LED ready
-Connected to speaker!
-Volume initialised from speaker: 42 / 100
-```
-
-## Running with PM2
-
-Use [PM2](https://pm2.keymetrics.io/) to run the app in the background and restart it on device reboot.
-
-### 1. Install PM2
-
-```bash
-npm install -g pm2
-```
-
-### 2. Start the app
-
-Replace `192.168.0.101` with your speaker IP:
-
-```bash
-pm2 start index.js --name od11-remote -- --ip=192.168.0.101
-```
-
-The `--` passes the following arguments to your app.
-
-### 3. Save and enable startup on reboot
-
-```bash
-pm2 save
-pm2 startup
-```
-
-`pm2 startup` prints a command you must run (with `sudo`) to enable PM2 at boot. Copy and run it.
-
-### Useful PM2 commands
-
-| Command | Description |
-|---------|-------------|
-| `pm2 status` | List processes and status |
-| `pm2 logs od11-remote` | View logs |
-| `pm2 restart od11-remote` | Restart the app |
-| `pm2 stop od11-remote` | Stop the app |
-| `pm2 delete od11-remote` | Remove from PM2 |
-
-### Raspberry Pi with sudo
-
-If the app needs `sudo` for Bluetooth, start it as:
-
-```bash
-sudo pm2 start index.js --name od11-remote -- --ip=192.168.0.101
-sudo pm2 save
-sudo pm2 startup
-```
-
-## Nuimo controls
-
-| Action | Volume mode | Symbol exploration mode |
-|--------|-------------|--------------------------|
-| **Rotate** | Change volume | Cycle built-in symbols (0–99) |
-| **Short press** | Show battery level | Exit symbol mode |
-| **Long press (1s)** | Switch to symbol mode | Switch to volume mode |
-
-## Raspberry Pi setup
-
-### Bluetooth permissions
-
-BLE often needs elevated permissions. Try:
-
-```bash
-sudo node index.js --ip=192.168.0.101
-```
-
-Or grant capabilities to Node:
+So you don't need `sudo` every time:
 
 ```bash
 sudo setcap cap_net_raw+eip $(eval readlink -f $(which node))
 ```
 
-Then you can run without `sudo`:
+Re-run this after upgrading Node.
+
+### 3. Try it
+
+Find your speaker IPs (Orthoplay app → speaker settings, or your router's device list), then:
 
 ```bash
-node index.js --ip=192.168.0.101
+node index.js --ip=192.168.0.100,192.168.0.101
 ```
 
-### Bluetooth service
+For a single speaker, pass one IP. You should see:
 
-Ensure Bluetooth is running:
+```
+Speaker IPs: 192.168.0.100, 192.168.0.101
+Connected to speaker at 192.168.0.100
+Volume initialised from speaker: 31 / 100
+Scanning for Nuimo...
+Nuimo found: f2a6470ee3fa
+...
+Nuimo LED ready
+Nuimo fully connected.
+```
+
+Turn the Nuimo. The volume should change and the number should follow.
+
+Instead of `--ip`, you can copy `config.example.js` to `config.local.js` and list the IPs there (`config.local.js` is gitignored).
+
+### 4. Run it in the background with PM2
+
+[PM2](https://pm2.keymetrics.io/) keeps the app running and starts it again after a reboot:
 
 ```bash
-sudo systemctl status bluetooth
+npm install -g pm2
+pm2 start index.js --name od11-remote -- --ip=192.168.0.100,192.168.0.101
+pm2 save
+pm2 startup     # prints a sudo command, run it once
 ```
 
-### If connection hangs
+## Everyday use
 
-The app logs each step. If it stops after `Nuimo found:`:
+| Task | Command |
+|---|---|
+| Check it's running | `pm2 status` |
+| Watch the logs | `pm2 logs od11-remote` (Ctrl+C to exit) |
+| Restart | `pm2 restart od11-remote` |
+| Update to the latest code | `git pull && pm2 restart od11-remote` |
+| Change the speaker IPs | `pm2 delete od11-remote`, then the `pm2 start …` and `pm2 save` lines above |
 
-- **Connect timeout** – Nuimo may still be paired elsewhere; power-cycle it.
-- **Service discovery timeout** – Try `sudo` or check Bluetooth stability.
-- **Permissions** – Run with `sudo` or use `setcap` as above.
+## Options
+
+| Flag | Purpose |
+|---|---|
+| `--ip=A[,B]` | Speaker IP(s). Required unless set in `config.local.js` |
+| `--debug` | More logging, raw speaker messages to `speaker.log`, and an LED pattern browser (long-touch bottom) |
+| `--battery-log` | Append Nuimo battery readings to `battery.log` |
 
 ## Troubleshooting
 
-| Issue | What to try |
-|-------|-------------|
-| `Usage: node index.js --ip=...` | Provide the speaker IP with `--ip=192.168.0.101` |
-| `Nuimo found` then freeze | See [Raspberry Pi setup](#raspberry-pi-setup); try `sudo` or power-cycle Nuimo |
-| `Connect timeout (10s)` | Power-cycle Nuimo; ensure it’s not connected to another device |
-| `Disconnected from speaker` | Check speaker IP and network; speaker must be on |
-| No Nuimo discovered | Turn Nuimo on; ensure Bluetooth is enabled |
+Start with `pm2 logs od11-remote`, since the app logs each step.
+
+| You see | Likely cause / fix |
+|---|---|
+| ✕ on the Nuimo when turning | No speaker connected. Check the logs for `No speaker reachable` and make sure the speakers are on and on Wi-Fi |
+| `No speaker reachable (tried …)` | None of the IPs answer. Check the IPs and the speakers' network connection |
+| Number jumps back after turning | The speaker is connected but ignored the change. Try again, and check the Orthoplay app |
+| Stuck after `Nuimo found:` / `Connect timeout` | The Nuimo is still connected elsewhere. Power-cycle it (it retries on its own) |
+| Nuimo never found | Nuimo off or out of range, or Bluetooth disabled (`sudo systemctl status bluetooth`) |
+| Bluetooth permission errors | Run the `setcap` step above |
 
 ## Project structure
 
 ```
-OD11-remote/
-├── index.js          # Main app – Nuimo + speaker integration
-├── nuimo.js          # Nuimo BLE client (discovery, connect, LED, events)
-├── speaker.js       # OD-11 WebSocket client
-├── config.js        # Config loader (--ip or config.local.js)
-├── glyphs.json      # Digit glyphs for volume display
-└── package.json
+od11-remote/
+├── index.js        # Interaction logic: Nuimo gestures → speaker actions, LED display
+├── nuimo.js        # Nuimo Bluetooth client (scan, connect, reconnect, LED matrix)
+├── speaker.js      # OD-11 WebSocket client (multi-IP failover, volume, playback)
+├── config.js       # Command-line / config.local.js parsing
+├── patterns.js     # Named 9×9 LED icons
+└── glyphs.json     # Digit glyphs for the volume number
 ```
