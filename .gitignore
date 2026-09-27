@@ -2,7 +2,6 @@ node_modules
 .DS_Store
 # Local exploration files
 NUIMO_GESTURES.md
-NUIMO_BEHAVIOR_v2.md
 GESTURE_MAP.md
 NUIMO_SPEC.md
 test-patterns.js

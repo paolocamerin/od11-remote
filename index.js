@@ -2,7 +2,7 @@
  * OD-11 remote: Nuimo controller + OD-11 speaker integration.
  *
  * Interaction model:
- *   - On connect:       powerOnMatrix (2s) → volume display
+ *   - On connect:       powerOnMatrix icon
  *   - Rotate:           volume up/down; number shown instantly, then corrected to the
  *                       speaker's real volume once rotation settles. Shows ✕ instead
  *                       while no speaker is connected (so "no number" = not working).
@@ -103,14 +103,19 @@ function showFeedback(leds) {
     nuimo.setMatrix(leds);
 }
 
+/** The value the matrix shows for a volume: two digits max. */
+function displayNumber(vol) {
+    return Math.min(99, Math.round(vol));
+}
+
 /**
  * Show a volume number on the matrix.
  * @param {number} vol
  */
 function showVolume(vol) {
     if (!ledReady) return;
-    shownVolume = Math.min(99, Math.round(vol));
-    nuimo.setVolumeNumber(shownVolume);
+    shownVolume = displayNumber(vol);
+    nuimo.setNumber(shownVolume);
 }
 
 /**
@@ -167,7 +172,7 @@ function settleVolume() {
     surrogateVolume = speaker.getVolume().vol;
     if (patternBrowserActive || shownVolume === null) return;
     if (lastInteractionTime !== lastRotateTime) return; // another gesture took over the display
-    if (Math.min(99, Math.round(surrogateVolume)) === shownVolume) return;
+    if (displayNumber(surrogateVolume) === shownVolume) return;
     if (config.debug) console.log('Volume corrected to speaker value:', surrogateVolume);
     showVolume(surrogateVolume);
 }
@@ -179,6 +184,10 @@ nuimo.emitter.on('ledReady', () => {
     hasWoken = false;
     console.log('Nuimo LED ready');
     showFeedback(p('powerOnMatrix'));
+});
+
+nuimo.emitter.on('disconnect', () => {
+    ledReady = false;
 });
 
 // ── Rotate ─────────────────────────────────────────────────────────────────
@@ -224,14 +233,13 @@ nuimo.emitter.on('release', () => {
     markInteraction();
 
     if (held >= LONG_PRESS_MS) {
-        // Long press → show battery icon (1.5s) → battery number (1.5s) → volume
+        // Long press → show battery icon (1.5s) → battery number
         const battery = nuimo.getBatteryLevel();
         console.log('Battery:', battery, '%');
-        if (!ledReady) return;
-        nuimo.setMatrix(p('battery'));
+        showFeedback(p('battery'));
         setTimeout(() => {
             if (!ledReady) return;
-            nuimo.setVolumeNumber(Math.min(99, battery != null ? battery : 0));
+            nuimo.setNumber(battery != null ? battery : 0);
         }, 1500);
     } else {
         // Short press — first press after connect or idle is always a wake
@@ -244,7 +252,7 @@ nuimo.emitter.on('release', () => {
         // Toggle play/pause — route based on source capabilities
         const newPlaying = speaker.togglePlayPause();
         if (newPlaying === null) {
-            // Source doesn't support pause (e.g. Optical) — Apple TV control pending
+            // Source doesn't support pause (e.g. Optical) — see appletv.js (not wired in yet)
             showFeedback(p('questionMarkMatrix'));
         } else {
             console.log('Playback:', newPlaying ? 'playing' : 'paused');
@@ -255,16 +263,11 @@ nuimo.emitter.on('release', () => {
 
 // ── Touch / swipe feedback ─────────────────────────────────────────────────
 
+// Swipe and touch gestures have a pattern of the same name in patterns.js.
+
 nuimo.emitter.on('swipe', (gesture) => {
     markInteraction();
-
-    const iconMap = {
-        swipeLeft:  'swipeLeft',
-        swipeRight: 'swipeRight',
-        swipeUp:    'swipeUp',
-        swipeDown:  'swipeDown',
-    };
-    showFeedback(p(iconMap[gesture] || 'questionMarkMatrix'));
+    showFeedback(p(gesture) || p('questionMarkMatrix'));
 });
 
 nuimo.emitter.on('touch', (gesture) => {
@@ -284,18 +287,7 @@ nuimo.emitter.on('touch', (gesture) => {
         }
     }
     if (patternBrowserActive) return; // suppress other touch feedback in browser
-
-    const iconMap = {
-        touchLeft:      'touchLeft',
-        touchRight:     'touchRight',
-        touchTop:       'touchTop',
-        touchBottom:    'touchBottom',
-        longTouchLeft:  'longTouchLeft',
-        longTouchRight: 'longTouchRight',
-        longTouchTop:   'longTouchTop',
-        longTouchBottom:'longTouchBottom',
-    };
-    showFeedback(p(iconMap[gesture] || 'questionMarkMatrix'));
+    showFeedback(p(gesture) || p('questionMarkMatrix'));
 });
 
 // ── Fly feedback ───────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 /**
  * Nuimo controller BLE client.
- * Discovers and connects to a Nuimo, subscribes to rotation/button events,
- * and provides setVolumeBar() / setVolumeNumber() for the 9×9 LED matrix.
+ * Discovers and connects to a Nuimo, subscribes to rotation/button/touch/fly events,
+ * and provides setMatrix() / setNumber() for the 9×9 LED matrix.
  *
  * LED matrix format (per Senic): 11 bytes (81 LEDs, row-major) + brightness + timeout.
  * 11th byte: bit 0 = 81st LED, bit 4 = onion skinning (smooth transitions).
@@ -12,12 +12,12 @@ const EventEmitter = require('events');
 const fs = require('fs');
 const path = require('path');
 const config = require('./config');
+const GLYPHS = require('./glyphs.json');
 
 const emitter = new EventEmitter();
 let ledCharacteristic = null;
 let batteryLevel = null;
 let batteryInterval = null;
-let firmwareVersion = null;
 
 const RECONNECT_DELAY_MS = 5000;
 const CONNECT_TIMEOUT_MS = 10000;
@@ -81,13 +81,12 @@ async function writeMatrix(ch, matrixArray, brightness = 0xff, timeoutMs = 25500
 }
 
 /**
- * Load glyphs from glyphs.json and render a number (0–99) to an 81-element matrix.
+ * Render a number (0–99) to an 81-element matrix using the glyphs from glyphs.json.
  * Layout: 2 digits side-by-side, centered vertically. Each digit from glyphs (width×height).
  */
-function numberToMatrix(value, glyphsPath = path.join(__dirname, 'glyphs.json')) {
+function numberToMatrix(value) {
     const arr = new Array(81).fill(0);
-    const glyphs = JSON.parse(fs.readFileSync(glyphsPath, 'utf8'));
-    const { width, height, gap } = glyphs;
+    const { width, height, gap } = GLYPHS;
     const digitWidth = width + gap;
     const totalWidth = digitWidth * 2 - gap;
     const offsetX = Math.floor((9 - totalWidth) / 2);
@@ -98,28 +97,11 @@ function numberToMatrix(value, glyphsPath = path.join(__dirname, 'glyphs.json'))
     const d2 = num % 10;
 
     for (let row = 0; row < height; row++) {
-        const rowStr1 = glyphs.glyphs[String(d1)][row] || '';
-        const rowStr2 = glyphs.glyphs[String(d2)][row] || '';
+        const rowStr1 = GLYPHS.glyphs[String(d1)][row] || '';
+        const rowStr2 = GLYPHS.glyphs[String(d2)][row] || '';
         for (let c = 0; c < width; c++) {
             if (rowStr1[c] === '1') arr[(offsetY + row) * 9 + (offsetX + c)] = 1;
             if (rowStr2[c] === '1') arr[(offsetY + row) * 9 + (offsetX + digitWidth + c)] = 1;
-        }
-    }
-    return arr;
-}
-
-/**
- * Build an 81-element array for a full-width horizontal volume bar.
- * Fills rows from bottom up. normalized0to1 in [0, 1].
- */
-function volumeBarMatrix(normalized0to1) {
-    const arr = new Array(81).fill(0);
-    const rows = 9;
-    const cols = 9;
-    const filledRows = Math.min(rows, Math.round(normalized0to1 * rows));
-    for (let r = rows - 1; r >= rows - filledRows; r--) {
-        for (let c = 0; c < cols; c++) {
-            arr[r * cols + c] = 1;
         }
     }
     return arr;
@@ -135,12 +117,15 @@ function volumeBarMatrix(normalized0to1) {
 const LED_MATRIX_SERVICE_UUID = 'f29b1523cb1940f3be5c7241ecb82fd1';
 const LED_MATRIX_CHAR_UUID = 'f29b1524cb1940f3be5c7241ecb82fd1';
 
-const NUIMO_INPUT_UUIDS = [
-    'f29b1529cb1940f3be5c7241ecb82fd2',  // button
-    'f29b1526cb1940f3be5c7241ecb82fd2',  // fly
-    'f29b1527cb1940f3be5c7241ecb82fd2',  // swipe
-    'f29b1528cb1940f3be5c7241ecb82fd2',  // rotation
-];
+const BUTTON_UUID   = 'f29b1529cb1940f3be5c7241ecb82fd2';
+const FLY_UUID      = 'f29b1526cb1940f3be5c7241ecb82fd2';
+const TOUCH_UUID    = 'f29b1527cb1940f3be5c7241ecb82fd2';  // swipe + touch ring
+const ROTATION_UUID = 'f29b1528cb1940f3be5c7241ecb82fd2';
+const NUIMO_INPUT_UUIDS = [BUTTON_UUID, FLY_UUID, TOUCH_UUID, ROTATION_UUID];
+
+const SWIPE_GESTURES = ['swipeLeft', 'swipeRight', 'swipeUp', 'swipeDown'];
+const TOUCH_GESTURES = ['touchLeft', 'touchRight', 'touchTop', 'touchBottom'];
+const LONG_TOUCH_GESTURES = ['longTouchLeft', 'longTouchRight', 'longTouchTop', 'longTouchBottom'];
 
 let connState = 'idle';
 let currentDevice = null;
@@ -212,6 +197,68 @@ function cleanupConnection() {
     if (hadConnection) emitter.emit('disconnect');
 }
 
+/**
+ * Reject if `promise` doesn't settle within `ms`. Clears its timer either way.
+ */
+function withTimeout(promise, ms, label) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label + ' timeout (' + ms / 1000 + 's)')), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Give up on the current connection attempt: tear down, disconnect defensively
+ * (a BLE connect can complete after we stopped waiting — a connected peripheral
+ * stops advertising, so a lingering one would be invisible to the next scan),
+ * and schedule a rescan.
+ */
+function abortAttempt(device) {
+    cleanupConnection();
+    device.disconnectAsync().catch(() => {});
+    connState = 'idle';
+    scheduleRescan();
+}
+
+async function readBattery(ch) {
+    try {
+        const b = await ch.readAsync();
+        batteryLevel = b[0];
+        logBattery(batteryLevel);
+    } catch (e) {
+        console.log('Battery read error:', e.message);
+    }
+}
+
+/**
+ * Translate a notification from one of the input characteristics into an emitter event.
+ */
+function handleInput(uuid, data) {
+    if (config.debug) {
+        const hex = [...data].map(b => b.toString(16).padStart(2, '0')).join(' ');
+        console.log('DATA', uuid.slice(-8), '[' + hex + ']');
+    }
+    if (uuid === FLY_UUID) {
+        // Fly/wave gesture: byte 0 = direction (0=left, 1=right, 4=updown), byte 1 = speed
+        const dir = data[0] === 0 ? 'left' : data[0] === 1 ? 'right' : 'updown';
+        emitter.emit('fly', dir, data[1] || 0);
+    } else if (uuid === TOUCH_UUID) {
+        // Touch/swipe ring: 0-3 = swipe L/R/U/D, 4-7 = touch L/R/T/B, 8-11 = long touch L/R/T/B
+        const v = data[0];
+        if (v < 4)       emitter.emit('swipe', SWIPE_GESTURES[v]);
+        else if (v < 8)  emitter.emit('touch', TOUCH_GESTURES[v - 4]);
+        else if (v < 12) emitter.emit('touch', LONG_TOUCH_GESTURES[v - 8]);
+        if (config.debug) console.log('Touch/swipe:', v);
+    } else if (uuid === BUTTON_UUID) {
+        emitter.emit(data[0] === 1 ? 'press' : 'release');
+    } else if (uuid === ROTATION_UUID) {
+        // Rotation: Int16LE signed — only the direction is used
+        const delta = data.readInt16LE(0);
+        if (delta !== 0) emitter.emit('rotate', delta > 0 ? 1 : -1);
+    }
+}
+
 function onDeviceDisconnect() {
     console.log('Nuimo disconnected. Reconnecting in', RECONNECT_DELAY_MS / 1000, 's...');
     cleanupConnection();
@@ -246,23 +293,12 @@ async function connect(device) {
     currentDevice = device;
     console.log('Connecting to Nuimo...');
     try {
-        await Promise.race([
-            device.connectAsync(),
-            new Promise((_, reject) =>
-                setTimeout(() => reject(new Error('Connect timeout (10s)')), CONNECT_TIMEOUT_MS)
-            )
-        ]);
+        await withTimeout(device.connectAsync(), CONNECT_TIMEOUT_MS, 'Connect');
         console.log('Connected. Discovering services...');
     } catch (e) {
         console.error('Connect failed:', e.message);
-        // The underlying BLE connect may complete after we gave up waiting on
-        // it — disconnect defensively so it can't linger as a zombie that's
-        // connected but never discovered/subscribed (a connected peripheral
-        // stops advertising, so a zombie is invisible to the next scan too).
-        device.disconnectAsync().catch(() => {});
-        currentDevice = null;
-        connState = 'idle';
-        scheduleRescan();
+        currentDevice = null; // no listeners attached yet — nothing to clean up or announce
+        abortAttempt(device);
         return;
     }
 
@@ -273,19 +309,11 @@ async function connect(device) {
     connState = 'discovering';
     let services;
     try {
-        services = await Promise.race([
-            device.discoverServicesAsync(),
-            new Promise((_, reject) =>
-                setTimeout(() => reject(new Error('Service discovery timeout (10s)')), DISCOVER_TIMEOUT_MS)
-            )
-        ]);
+        services = await withTimeout(device.discoverServicesAsync(), DISCOVER_TIMEOUT_MS, 'Service discovery');
         console.log('Services found:', services.length);
     } catch (e) {
         console.error('Service discovery failed:', e.message);
-        cleanupConnection();
-        device.disconnectAsync().catch(() => {});
-        connState = 'idle';
-        scheduleRescan();
+        abortAttempt(device);
         return;
     }
 
@@ -319,8 +347,7 @@ async function connect(device) {
                 if (uuid === '2a26') {
                     try {
                         const fw = await ch.readAsync();
-                        firmwareVersion = fw.toString('utf8').trim();
-                        console.log('Firmware version:', firmwareVersion);
+                        console.log('Firmware version:', fw.toString('utf8').trim());
                     } catch (e) {
                         console.log('Firmware read error:', e.message);
                     }
@@ -329,22 +356,8 @@ async function connect(device) {
 
                 // Battery level
                 if (uuid === '2a19') {
-                    try {
-                        const battery = await ch.readAsync();
-                        batteryLevel = battery[0];
-                        logBattery(batteryLevel);
-                    } catch (e) {
-                        console.log('Battery read error:', e.message);
-                    }
-                    batteryInterval = setInterval(async () => {
-                        try {
-                            const b = await ch.readAsync();
-                            batteryLevel = b[0];
-                            logBattery(batteryLevel);
-                        } catch (e) {
-                            console.log('Battery read error:', e.message);
-                        }
-                    }, BATTERY_LOG_INTERVAL_MS);
+                    await readBattery(ch);
+                    batteryInterval = setInterval(() => readBattery(ch), BATTERY_LOG_INTERVAL_MS);
                     continue;
                 }
 
@@ -364,37 +377,7 @@ async function connect(device) {
                         console.log('Subscribe error:', e.message);
                         continue;
                     }
-                    const charUuid = normaliseUuid(ch.uuid);
-                    const listener = function (data) {
-                        if (config.debug) {
-                            const hex = [...data].map(b => b.toString(16).padStart(2, '0')).join(' ');
-                            console.log('DATA', charUuid.slice(-8), '[' + hex + ']');
-                        }
-                        if (charUuid === 'f29b1526cb1940f3be5c7241ecb82fd2') {
-                            // Fly/wave gesture: byte 0 = direction (0=left, 1=right, 4=updown), byte 1 = speed
-                            const dir = data[0] === 0 ? 'left' : data[0] === 1 ? 'right' : 'updown';
-                            const speed = data[1] || 0;
-                            emitter.emit('fly', dir, speed);
-                        } else if (charUuid === 'f29b1527cb1940f3be5c7241ecb82fd2') {
-                            // Touch/swipe ring: 0=swipe left, 1=swipe right, 2=swipe up, 3=swipe down,
-                            // 4-7=touch L/R/T/B, 8-11=long touch L/R/T/B
-                            const SWIPE = ['swipeLeft', 'swipeRight', 'swipeUp', 'swipeDown'];
-                            const TOUCH = ['touchLeft', 'touchRight', 'touchTop', 'touchBottom'];
-                            const LONG  = ['longTouchLeft', 'longTouchRight', 'longTouchTop', 'longTouchBottom'];
-                            const v = data[0];
-                            if (v < 4)       emitter.emit('swipe', SWIPE[v]);
-                            else if (v < 8)  emitter.emit('touch', TOUCH[v - 4]);
-                            else if (v < 12) emitter.emit('touch', LONG[v - 8]);
-                            if (config.debug) console.log('Touch/swipe:', v);
-                        } else if (charUuid === 'f29b1529cb1940f3be5c7241ecb82fd2') {
-                            const evt = data[0] === 1 ? 'press' : 'release';
-                            emitter.emit(evt);
-                        } else {
-                            // Rotation: Int16LE signed
-                            const direction = data.readInt16LE(0) > 0 ? 1 : -1;
-                            emitter.emit('rotate', direction);
-                        }
-                    };
+                    const listener = (data) => handleInput(uuid, data);
                     ch.on('data', listener);
                     subscribedCharacteristics.push({ ch, listener });
                 }
@@ -402,10 +385,7 @@ async function connect(device) {
         }
     } catch (e) {
         console.error('Setup failed after service discovery:', e.message);
-        cleanupConnection();
-        device.disconnectAsync().catch(() => {});
-        connState = 'idle';
-        scheduleRescan();
+        abortAttempt(device);
         return;
     }
 
@@ -472,21 +452,10 @@ async function shutdown() {
 const MATRIX_TIMEOUT_MS = 1000;
 
 /**
- * Draw a volume bar on the Nuimo matrix.
- * @param {number} normalized0to1 - Volume 0–1 (0 = empty, 1 = full)
- */
-async function setVolumeBar(normalized0to1) {
-    if (!ledCharacteristic) return;
-    const n = Math.max(0, Math.min(1, normalized0to1));
-    const arr = volumeBarMatrix(n);
-    await writeMatrix(ledCharacteristic, arr, 0xff, MATRIX_TIMEOUT_MS);
-}
-
-/**
  * Draw a number (00–99) on the Nuimo matrix using glyphs from glyphs.json.
- * @param {number} value - 0–99
+ * @param {number} value - clamped to 0–99
  */
-async function setVolumeNumber(value) {
+async function setNumber(value) {
     if (!ledCharacteristic) return;
     const arr = numberToMatrix(value);
     await writeMatrix(ledCharacteristic, arr, 0xff, MATRIX_TIMEOUT_MS);
@@ -500,29 +469,6 @@ function getBatteryLevel() {
 }
 
 /**
- * Show a built-in symbol by index (exploration mode).
- * Payload format is undocumented; we try buf[0]=index as a guess.
- * Logs each send to symbol-log.txt for mapping payload → observed symbol.
- * @param {number} index - 0–255
- */
-async function setBuiltinSymbol(index) {
-    if (!ledCharacteristic) return;
-    const buf = Buffer.alloc(13);
-    buf[0] = Math.max(0, Math.min(255, Math.round(index)));
-    buf[10] = 0x30;  // onion skinning + BUILTIN_MATRIX
-    buf[11] = 0xff;
-    buf[12] = 20;  // 2s
-    try {
-        await ledCharacteristic.writeAsync(buf, true);
-    } catch (e) {
-        if (config.debug) console.log('LED write failed (ignored):', e.message);
-    }
-
-    const line = `${index}\t${buf.toString('hex')}\t${new Date().toISOString()}\t\n`;
-    fs.appendFileSync(path.join(__dirname, 'symbol-log.txt'), line);
-}
-
-/**
  * Write an arbitrary 81-element matrix array to the Nuimo.
  * @param {number[]} matrixArray - 81 elements, 0 or 1
  * @param {number} [brightness=0xff]
@@ -533,8 +479,4 @@ async function setMatrix(matrixArray, brightness = 0xff, timeoutMs = MATRIX_TIME
     await writeMatrix(ledCharacteristic, matrixArray, brightness, timeoutMs);
 }
 
-function getFirmwareVersion() {
-    return firmwareVersion;
-}
-
-module.exports = { initialiseNuimo, emitter, setVolumeBar, setVolumeNumber, setMatrix, getBatteryLevel, setBuiltinSymbol, getFirmwareVersion, shutdown };
+module.exports = { initialiseNuimo, emitter, setNumber, setMatrix, getBatteryLevel, shutdown };

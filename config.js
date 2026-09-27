@@ -41,7 +41,6 @@ if (speakerIps.length === 0) {
     console.error('   or: create config.local.js with module.exports = { speakerIps: ["192.168.0.101", "192.168.0.100"] }');
     process.exit(1);
 }
-const speakerIp = speakerIps[0];
 
 const batteryLog = hasFlag('--battery-log');
 const debug = hasFlag('--debug');
@@ -55,4 +54,4 @@ for (const arg of args) {
     }
 }
 
-module.exports = { speakerIp, speakerIps, batteryLog, debug, atvName };
+module.exports = { speakerIps, batteryLog, debug, atvName };

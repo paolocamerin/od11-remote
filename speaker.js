@@ -93,32 +93,18 @@ function connect() {
 
         const items = Array.isArray(msg) ? msg : [msg];
         for (const item of items) {
-            // Top-level updates
-            if (item && item.update) {
-                parseUpdate(item);
+            if (!item) continue;
+            // The item itself first (it may carry the sources list), then the
+            // initial state bundled in group_joined.state[] / global_joined.state[].
+            for (const entry of [item, ...(Array.isArray(item.state) ? item.state : [])]) {
+                if (entry) handleEntry(entry);
             }
-            // Sources list (from group_joined)
-            if (item && Array.isArray(item.sources)) {
-                for (const src of item.sources) {
-                    if (src && typeof src.id === 'number') {
-                        sourcesMap[src.id] = src;
-                    }
-                }
-            }
-            if (item && item.speaker) learnSpeakerIp(item.speaker);
-            // Initial state inside group_joined.state[] and global_joined.state[]
-            if (item && Array.isArray(item.state)) {
-                for (const stateItem of item.state) {
-                    if (stateItem && stateItem.update) parseUpdate(stateItem);
-                    if (stateItem && stateItem.speaker) learnSpeakerIp(stateItem.speaker);
-                }
-                // Print a summary once the group state is fully parsed
-                if (item.response === 'group_joined') {
-                    const src = currentSourceId !== null ? sourcesMap[currentSourceId] : null;
-                    console.log('Speaker state — vol:', currentVolume + '/' + maxVolume,
-                        '| playing:', isPlaying,
-                        '| source:', src ? src.name + ' (id=' + currentSourceId + ')' : 'unknown');
-                }
+            // Print a summary once the group state is fully parsed
+            if (item.response === 'group_joined') {
+                const src = currentSourceId !== null ? sourcesMap[currentSourceId] : null;
+                console.log('Speaker state — vol:', currentVolume + '/' + maxVolume,
+                    '| playing:', isPlaying,
+                    '| source:', src ? src.name + ' (id=' + currentSourceId + ')' : 'unknown');
             }
         }
 
@@ -157,6 +143,19 @@ function connect() {
 }
 
 /**
+ * Apply one message entry: a state update, the sources list, or a group member's info.
+ */
+function handleEntry(entry) {
+    if (entry.update) parseUpdate(entry);
+    if (Array.isArray(entry.sources)) {
+        for (const src of entry.sources) {
+            if (src && typeof src.id === 'number') sourcesMap[src.id] = src;
+        }
+    }
+    if (entry.speaker) learnSpeakerIp(entry.speaker);
+}
+
+/**
  * Remember a group member's IP (from the speaker's own group state) as a fallback.
  */
 function learnSpeakerIp(speakerInfo) {
@@ -177,7 +176,6 @@ function parseUpdate(item) {
     if (item.update === 'playback_state_changed' && typeof item.playing === 'boolean') {
         console.log('[speaker] playback_state_changed:', item.playing);
         isPlaying = item.playing;
-        speakerEmitter.emit('playbackChange', { playing: isPlaying });
     }
     if (item.update === 'group_input_source_changed' && typeof item.source === 'number') {
         currentSourceId = item.source;
@@ -201,7 +199,7 @@ function initialiseSpeaker() {
  * @param {number} amount - Delta to apply (+/-)
  */
 function changeVolume(amount) {
-    if (!socket || socket.readyState !== ws.OPEN) {
+    if (!isConnected()) {
         console.log('[changeVolume] blocked: socket not open (readyState=' + (socket ? socket.readyState : 'null') + ')');
         return;
     }
@@ -228,70 +226,37 @@ function getVolume() {
 }
 
 /**
- * Get the last known playback state.
- * @returns {boolean}
- */
-function getIsPlaying() {
-    return isPlaying;
-}
-
-/**
- * Toggle play/pause on the speaker.
- * Returns the new playing state (true/false), or null if the current source
- * does not support pause (e.g. line in, optical, bluetooth).
- * @returns {boolean|null}
- */
-function togglePlayPause() {
-    if (!socket || socket.readyState !== ws.OPEN) {
-        console.log('[togglePlayPause] blocked: socket not open');
-        return null;
-    }
-    const src = currentSourceId !== null ? sourcesMap[currentSourceId] : null;
-    if (src && src.supports_pause === false) {
-        console.log('[togglePlayPause] source does not support pause:', src.name || currentSourceId);
-        return null;
-    }
-    const newPlaying = !isPlaying;
-    const action = newPlaying ? 'playback_start' : 'playback_stop';
-    const payload = { action };
-    console.log('[togglePlayPause] sending:', JSON.stringify(payload), '(was isPlaying=' + isPlaying + ')');
-    socket.send(JSON.stringify(payload));
-    isPlaying = newPlaying; // optimistic — overridden by next playback_state_changed from speaker
-    return newPlaying;
-}
-
-/**
- * Switch to a specific input source by id.
- * @param {number} sourceId
- */
-function setInputSource(sourceId) {
-    if (!socket || socket.readyState !== ws.OPEN) return;
-    socket.send(JSON.stringify({ action: 'group_set_input_source', source: sourceId }));
-}
-
-/**
- * Get all known sources.
- * @returns {object} map of id → source object
- */
-function getSources() {
-    return sourcesMap;
-}
-
-/**
- * Get the current source id, or null if unknown.
- * @returns {number|null}
- */
-function getCurrentSourceId() {
-    return currentSourceId;
-}
-
-/**
- * Returns true if the current source supports pause (i.e. is not optical/line-in/bluetooth).
+ * Whether the current source supports pause (line in / optical don't).
+ * Unknown source → assume it does.
  * @returns {boolean}
  */
 function canCurrentSourcePause() {
     const src = currentSourceId !== null ? sourcesMap[currentSourceId] : null;
     return src ? src.supports_pause !== false : true;
+}
+
+/**
+ * Toggle play/pause on the speaker.
+ * Returns the new playing state (true/false), or null if not connected or the
+ * current source does not support pause (e.g. line in, optical).
+ * @returns {boolean|null}
+ */
+function togglePlayPause() {
+    if (!isConnected()) {
+        console.log('[togglePlayPause] blocked: socket not open');
+        return null;
+    }
+    if (!canCurrentSourcePause()) {
+        const src = sourcesMap[currentSourceId];
+        console.log('[togglePlayPause] source does not support pause:', src.name || currentSourceId);
+        return null;
+    }
+    const newPlaying = !isPlaying;
+    const payload = { action: newPlaying ? 'playback_start' : 'playback_stop' };
+    console.log('[togglePlayPause] sending:', JSON.stringify(payload), '(was isPlaying=' + isPlaying + ')');
+    socket.send(JSON.stringify(payload));
+    isPlaying = newPlaying; // optimistic — overridden by next playback_state_changed from speaker
+    return newPlaying;
 }
 
 /**
@@ -306,4 +271,4 @@ function shutdown() {
     }
 }
 
-module.exports = { initialiseSpeaker, changeVolume, isConnected, getVolume, getIsPlaying, togglePlayPause, setInputSource, getSources, getCurrentSourceId, canCurrentSourcePause, speakerEmitter, shutdown };
+module.exports = { initialiseSpeaker, changeVolume, isConnected, getVolume, togglePlayPause, speakerEmitter, shutdown };

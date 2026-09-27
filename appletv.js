@@ -1,6 +1,9 @@
 /**
  * Apple TV control via node-pyatv (wraps the `atvremote` CLI from pyatv).
  *
+ * Not wired into index.js yet — planned for play/pause on sources the speaker
+ * can't pause itself (e.g. Optical from the Apple TV).
+ *
  * Setup (once per Pi):
  *   pip install pyatv
  *   atvremote wizard   # discovers Apple TV, pairs, saves credentials to ~/.pyatv/

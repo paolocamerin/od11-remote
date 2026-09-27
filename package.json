@@ -1,11 +1,11 @@
 {
   "name": "od11-remote",
   "version": "1.1.0",
-  "description": "",
+  "description": "Control Teenage Engineering OD-11 speakers with a Senic Nuimo over Bluetooth LE",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test test/interaction.test.js"
   },
   "keywords": [],
   "author": "",
@@ -14,7 +14,6 @@
   "dependencies": {
     "@abandonware/noble": "^1.9.2-26",
     "@sebbo2002/node-pyatv": "^9.0.2",
-    "nuimojs": "^1.0.3",
     "ws": "^8.19.0"
   }
 }
