@@ -456,6 +456,92 @@ const PATTERNS = [
         ],
     },
     {
+        name: 'oneThirdBattery',
+        leds: [
+            0, 0, 0, 1, 1, 1, 0, 0, 0,
+            0, 0, 1, 1, 0, 1, 1, 0, 0,
+            0, 0, 1, 0, 0, 0, 1, 0, 0,
+            0, 0, 1, 0, 0, 0, 1, 0, 0,
+            0, 0, 1, 0, 0, 0, 1, 0, 0,
+            0, 0, 1, 0, 0, 0, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+        ],
+    },
+    {
+        name: 'twoThirdsBattery',
+        leds: [
+            0, 0, 0, 1, 1, 1, 0, 0, 0,
+            0, 0, 1, 1, 0, 1, 1, 0, 0,
+            0, 0, 1, 0, 0, 0, 1, 0, 0,
+            0, 0, 1, 0, 0, 0, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+        ],
+    },
+    {
+        name: 'almostFullBattery',
+        leds: [
+            0, 0, 0, 1, 1, 1, 0, 0, 0,
+            0, 0, 1, 1, 0, 1, 1, 0, 0,
+            0, 0, 1, 0, 0, 0, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+        ],
+    },
+    {
+        name: 'fullBattery',
+        leds: [
+            0, 0, 0, 1, 1, 1, 0, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 1, 1, 0, 0,
+        ],
+    },
+    {
+        // The word "FULL", shown in place of the number when the battery is full
+        name: 'full',
+        leds: [
+            1, 1, 1, 1, 0, 1, 0, 0, 1,
+            1, 0, 0, 0, 0, 1, 0, 0, 1,
+            1, 1, 1, 1, 0, 1, 0, 0, 1,
+            1, 0, 0, 0, 0, 1, 1, 1, 1,
+            0, 0, 0, 0, 0, 0, 0, 0, 0,
+            1, 0, 0, 0, 0, 1, 0, 0, 0,
+            1, 0, 0, 0, 0, 1, 0, 0, 0,
+            1, 0, 0, 0, 0, 1, 0, 0, 0,
+            1, 1, 1, 1, 0, 1, 1, 1, 1,
+        ],
+    },
+    {
+        // The word "CHRG", shown in place of the number when the battery is nearly empty
+        name: 'charge',
+        leds: [
+            1, 1, 1, 1, 0, 1, 0, 0, 1,
+            1, 0, 0, 0, 0, 1, 0, 0, 1,
+            1, 0, 0, 0, 0, 1, 1, 1, 1,
+            1, 1, 1, 1, 0, 1, 0, 0, 1,
+            0, 0, 0, 0, 0, 0, 0, 0, 0,
+            1, 1, 1, 1, 0, 1, 1, 1, 1,
+            1, 0, 0, 1, 0, 1, 0, 0, 0,
+            1, 1, 1, 1, 0, 1, 0, 0, 1,
+            1, 0, 1, 0, 0, 1, 1, 1, 1,
+        ],
+    },
+    {
         name: 'heart',
         leds: [
             0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -815,4 +901,22 @@ const PATTERNS = [
 
 const PATTERNS_BY_NAME = Object.fromEntries(PATTERNS.map(p => [p.name, p]));
 
-module.exports = { PATTERNS, PATTERNS_BY_NAME };
+/** At this level the battery counts as full. */
+const BATTERY_FULL_AT = 100;
+/** Below this level the battery counts as nearly empty. */
+const BATTERY_LOW_BELOW = 5;
+
+/**
+ * Name of the battery icon for a level (0–100):
+ *   <5 empty · 5–33 one third · 34–66 two thirds · 67–99 almost full · 100 full.
+ * Unknown level (null) shows the empty outline.
+ */
+function batteryPatternName(level) {
+    if (level == null || level < BATTERY_LOW_BELOW) return 'battery';
+    if (level <= 33) return 'oneThirdBattery';
+    if (level <= 66) return 'twoThirdsBattery';
+    if (level < BATTERY_FULL_AT) return 'almostFullBattery';
+    return 'fullBattery';
+}
+
+module.exports = { PATTERNS, PATTERNS_BY_NAME, batteryPatternName, BATTERY_FULL_AT, BATTERY_LOW_BELOW };

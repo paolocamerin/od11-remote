@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nuimo Glyph Editor</title>
+<style>
+  :root {
+    --bg: #f4f2ee; --panel: #fff; --ink: #1c1b19; --muted: #77736b; --line: #dedad2;
+    --accent: #2b6cb0; --cell-off: #ece9e2; --cell-on: #1c1b19;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161513; --panel: #201f1c; --ink: #eeebe4; --muted: #9a958a; --line: #36342f;
+            --accent: #6aa7e8; --cell-off: #2c2a26; --cell-on: #f3efe6; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink); display: flex; flex-direction: column;
+         font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: baseline; }
+  h1 { font-size: 16px; margin: 0; }
+  header span { color: var(--muted); font-size: 12px; }
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: minmax(0, 1fr); gap: 20px; padding: 20px 20px 0; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  main > section { min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+
+  #gridWrap { flex: 1; min-height: 120px; container-type: size; display: flex; align-items: center; justify-content: center; margin-bottom: 12px; }
+  #grid { flex: none; display: grid; grid-template-columns: repeat(9, 1fr); gap: 3px; width: min(100cqw, 100cqh, 396px); aspect-ratio: 1; touch-action: none; user-select: none; }
+  #grid div { background: var(--cell-off); border-radius: 4px; cursor: pointer; }
+  #grid div.on { background: var(--cell-on); }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; align-items: center; }
+  button, input[type=text] { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  input[type=text] { flex: 1; min-width: 140px; }
+  label { color: var(--muted); font-size: 12px; }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; margin: 0 0 10px; font-size: 11px; overflow: visible; white-space: pre-wrap; }
+  .hint { color: var(--muted); font-size: 12px; margin: 0; }
+
+  #libraryBar { margin: 20px; padding: 12px 16px; flex: none; }
+  #libraryBar .head { display: flex; gap: 12px; align-items: baseline; margin-bottom: 8px; }
+  #libraryBar h2 { margin: 0; }
+  #library { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px; }
+  .thumb { flex: none; width: 72px; border: 1px solid var(--line); border-radius: 6px; padding: 4px; cursor: pointer; text-align: center; background: var(--bg); }
+  .thumb:hover, .thumb.active { border-color: var(--accent); }
+  .thumb canvas { width: 100%; aspect-ratio: 1; display: block; }
+  .thumb small { display: block; font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .thumb.custom small::before { content: "● "; color: var(--accent); }
+
+  #stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+  #nuimo { width: 100%; height: 100%; max-width: 560px; display: block; }
+  .slider { display: grid; grid-template-columns: 120px 1fr 56px; gap: 8px; align-items: center; margin-top: 8px; }
+  .slider output { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
+  @media (max-width: 860px) {
+    html, body { height: auto; }
+    body { min-height: 100%; }
+    main { flex: none; grid-template-columns: 1fr; grid-template-rows: auto; }
+    #gridWrap { flex: none; container-type: normal; display: block; }
+    #grid { width: min(100%, 396px); margin: 0 auto; }
+    main > section { overflow: visible; }
+    #stage { flex: none; }
+    #nuimo { height: auto; aspect-ratio: 1; max-width: 420px; margin: 0 auto; }
+  }
+</style>
+</head>
+<body>
+<header><h1>Nuimo Glyph Editor</h1><span>9×9 LED matrix · glyphs from <code>patterns.js</code></span></header>
+
+<main>
+    <section>
+      <h2>Editor</h2>
+      <div id="gridWrap"><div id="grid"></div></div>
+      <div class="row">
+        <button id="clear">Clear</button>
+        <button id="invert">Invert</button>
+        <button id="flipH">Flip ↔</button>
+        <button id="flipV">Flip ↕</button>
+        <button data-shift="-1,0">←</button><button data-shift="1,0">→</button>
+        <button data-shift="0,-1">↑</button><button data-shift="0,1">↓</button>
+      </div>
+      <div class="row">
+        <input type="text" id="name" placeholder="glyph name, e.g. charging" spellcheck="false">
+        <button id="save" class="primary">Save glyph</button>
+      </div>
+      <pre id="snippet"></pre>
+      <div class="row">
+        <button id="copy">Copy snippet</button>
+        <button id="copyAll">Copy all saved glyphs</button>
+        <button id="delete">Delete saved glyph</button>
+      </div>
+      <p class="hint">Click or drag to paint (drag from a lit cell to erase). Saved glyphs live in this browser; paste the snippet into <code>patterns.js</code> to ship one.</p>
+    </section>
+
+    <section>
+      <h2>In context</h2>
+      <div id="stage"><svg id="nuimo" viewBox="0 0 400 400" role="img" aria-label="Nuimo mockup"></svg></div>
+      <div class="slider"><label for="mm">Matrix width</label><input type="range" id="mm" min="20" max="35" step="1" value="30"><output id="mmOut"></output></div>
+      <div class="slider"><label for="glow">Glow</label><input type="range" id="glow" min="0" max="10" step="1" value="5"><output id="glowOut"></output></div>
+      <div class="row" style="margin-top:10px"><label><input type="checkbox" id="unlit" checked> show unlit LEDs</label></div>
+      <p class="hint">Body diameter 78 mm (published figure); the inner face circle is set to 50 mm. Adjust the matrix width to match your Nuimo (max 35 mm fits inside the circle).</p>
+    </section>
+</main>
+
+<section id="libraryBar">
+  <div class="head"><h2>Library</h2><span class="hint">Click to load into the editor · hover to preview on the Nuimo · blue dot = saved here, not yet in <code>patterns.js</code></span></div>
+  <div id="library"></div>
+</section>
+
+<!-- patterns.js is a CommonJS module; give it a stand-in so it loads in the browser. -->
+<script>window.module = { exports: {} };</script>
+<script src="../patterns.js"></script>
+<script>
+(function () {
+  const N = 9, STORE = 'nuimo-glyph-editor:v1';
+  const builtIn = (window.module.exports.PATTERNS || []).map(p => ({ name: p.name, leds: p.leds.slice() }));
+  const $ = id => document.getElementById(id);
+  const get = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
+  const put = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+
+  let saved = get(STORE, []);                      // [{name, leds}]
+  let leds = new Array(N * N).fill(0);
+  let hover = null;                                // leds being previewed from the library
+  let paintValue = 1, painting = false;
+
+  // ---- editor grid ----
+  const grid = $('grid'), cells = [];
+  for (let i = 0; i < N * N; i++) {
+    const c = document.createElement('div'); c.dataset.i = i; grid.appendChild(c); cells.push(c);
+  }
+  const cellAt = e => { const el = document.elementFromPoint(e.clientX, e.clientY); return el && el.parentNode === grid ? +el.dataset.i : -1; };
+  grid.addEventListener('pointerdown', e => {
+    const i = cellAt(e); if (i < 0) return;
+    painting = true; paintValue = leds[i] ? 0 : 1; leds[i] = paintValue; grid.setPointerCapture(e.pointerId); render();
+  });
+  grid.addEventListener('pointermove', e => {
+    if (!painting) return; const i = cellAt(e);
+    if (i >= 0 && leds[i] !== paintValue) { leds[i] = paintValue; render(); }
+  });
+  const stop = () => { painting = false; };
+  grid.addEventListener('pointerup', stop); grid.addEventListener('pointercancel', stop);
+
+  const setLeds = a => { leds = a.slice(); render(); };
+  $('clear').onclick = () => setLeds(leds.map(() => 0));
+  $('invert').onclick = () => setLeds(leds.map(v => 1 - v));
+  $('flipH').onclick = () => setLeds(leds.map((_, i) => leds[Math.floor(i / N) * N + (N - 1 - i % N)]));
+  $('flipV').onclick = () => setLeds(leds.map((_, i) => leds[(N - 1 - Math.floor(i / N)) * N + i % N]));
+  document.querySelectorAll('[data-shift]').forEach(b => b.onclick = () => {
+    const [dx, dy] = b.dataset.shift.split(',').map(Number);
+    setLeds(leds.map((_, i) => {
+      const x = i % N - dx, y = Math.floor(i / N) - dy;
+      return x < 0 || y < 0 || x >= N || y >= N ? 0 : leds[y * N + x];
+    }));
+  });
+
+  // ---- export ----
+  const cleanName = s => s.trim().replace(/[^A-Za-z0-9_]+(.)?/g, (_, c) => c ? c.toUpperCase() : '') || 'newGlyph';
+  const entryText = (name, a) => {
+    const rows = [];
+    for (let r = 0; r < N; r++) rows.push('            ' + a.slice(r * N, r * N + N).join(', ') + ',');
+    return '    {\n        name: \'' + name + '\',\n        leds: [\n' + rows.join('\n') + '\n        ],\n    },';
+  };
+  const copy = async (text, btn) => {
+    try { await navigator.clipboard.writeText(text); const t = btn.textContent; btn.textContent = 'Copied ✓'; setTimeout(() => btn.textContent = t, 1200); }
+    catch (e) { window.prompt('Copy this:', text); }
+  };
+  $('copy').onclick = e => copy(entryText(cleanName($('name').value), leds), e.target);
+  $('copyAll').onclick = e => copy(saved.map(g => entryText(g.name, g.leds)).join('\n'), e.target);
+
+  $('save').onclick = () => {
+    const name = cleanName($('name').value); $('name').value = name;
+    if (builtIn.some(g => g.name === name) && !confirm('"' + name + '" is already in patterns.js. Save a separate copy here anyway?')) return;
+    const i = saved.findIndex(g => g.name === name);
+    if (i >= 0) saved[i].leds = leds.slice(); else saved.push({ name, leds: leds.slice() });
+    put(STORE, saved); renderLibrary();
+  };
+  $('delete').onclick = () => {
+    const name = cleanName($('name').value);
+    if (!saved.some(g => g.name === name)) return;
+    saved = saved.filter(g => g.name !== name); put(STORE, saved); renderLibrary();
+  };
+
+  // ---- library ----
+  function thumb(g, custom) {
+    const d = document.createElement('div'); d.className = 'thumb' + (custom ? ' custom' : '');
+    const cv = document.createElement('canvas'); cv.width = cv.height = 54; d.appendChild(cv);
+    const cs = getComputedStyle(document.documentElement);
+    const ctx = cv.getContext('2d'), s = 54 / N;
+    g.leds.forEach((v, i) => {
+      ctx.fillStyle = v ? cs.getPropertyValue('--cell-on') : cs.getPropertyValue('--cell-off');
+      ctx.fillRect((i % N) * s + .5, Math.floor(i / N) * s + .5, s - 1, s - 1);
+    });
+    const l = document.createElement('small'); l.textContent = g.name; l.title = g.name; d.appendChild(l);
+    d.onclick = () => { setLeds(g.leds); $('name').value = g.name; };
+    d.onmouseenter = () => { hover = g.leds; renderNuimo(); };
+    d.onmouseleave = () => { hover = null; renderNuimo(); };
+    return d;
+  }
+  function renderLibrary() {
+    const lib = $('library'); lib.innerHTML = '';
+    saved.forEach(g => lib.appendChild(thumb(g, true)));
+    builtIn.forEach(g => lib.appendChild(thumb(g, false)));
+  }
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderLibrary);
+
+  // ---- Nuimo mockup ----
+  const BODY_MM = 78, FACE_MM = 50, SVG = 400, PX_PER_MM = SVG / (BODY_MM + 2);
+  function renderNuimo() {
+    const mm = +$('mm').value, glow = +$('glow').value, showOff = $('unlit').checked;
+    $('mmOut').textContent = mm + ' mm'; $('glowOut').textContent = glow;
+    const data = hover || leds;
+    const side = mm * PX_PER_MM, pitch = side / N, c = SVG / 2, x0 = c - side / 2;
+    const r = pitch * 0.3;
+    const R_BODY = BODY_MM / 2 * PX_PER_MM, R_FACE = FACE_MM / 2 * PX_PER_MM;
+    let s = '';
+    s += '<defs>'
+       + '<linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">'
+       + '<stop offset="0" stop-color="#8a8c92"/><stop offset=".35" stop-color="#3a3b40"/>'
+       + '<stop offset=".65" stop-color="#18191c"/><stop offset="1" stop-color="#050506"/></linearGradient>'
+       + '<linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">'
+       + '<stop offset="0" stop-color="#050506"/><stop offset="1" stop-color="#6b6d73"/></linearGradient>'
+       + '<radialGradient id="face" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#0d0e11"/><stop offset="1" stop-color="#050506"/></radialGradient>'
+       + '<filter id="blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="' + (glow * 0.5) + '"/></filter></defs>';
+    s += '<circle cx="' + c + '" cy="' + (c + 5) + '" r="' + R_BODY + '" fill="rgba(0,0,0,.25)" style="filter:blur(7px)"/>';
+    s += '<circle cx="' + c + '" cy="' + c + '" r="' + R_BODY + '" fill="url(#ring)"/>';
+    s += '<circle cx="' + c + '" cy="' + c + '" r="' + (R_BODY - .75) + '" fill="none" stroke="#9a9ca3" stroke-opacity=".35" stroke-width="1.5"/>';
+    s += '<circle cx="' + c + '" cy="' + c + '" r="' + (R_FACE + 2) + '" fill="url(#rim)"/>';
+    s += '<circle cx="' + c + '" cy="' + c + '" r="' + R_FACE + '" fill="url(#face)"/>';
+    let lit = '';
+    for (let i = 0; i < N * N; i++) {
+      const cx = x0 + (i % N + 0.5) * pitch, cy = x0 + (Math.floor(i / N) + 0.5) * pitch;
+      if (data[i]) lit += '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '"/>';
+      else if (showOff) s += '<circle cx="' + cx + '" cy="' + cy + '" r="' + (r * 0.45) + '" fill="#24262c"/>';
+    }
+    if (glow > 0) s += '<g fill="#cfe6ff" filter="url(#blur)" opacity="' + (0.35 + glow * 0.05) + '" transform="translate(0 0)">' + lit.replace(/r="/g, 'r="') + '</g>';
+    s += '<g fill="#f4faff">' + lit + '</g>';
+    $('nuimo').innerHTML = s;
+  }
+  ['mm', 'glow', 'unlit'].forEach(id => $(id).addEventListener('input', () => { renderNuimo(); put(STORE + ':ui', { mm: $('mm').value, glow: $('glow').value, unlit: $('unlit').checked }); }));
+  const ui = get(STORE + ':ui', null);
+  if (ui) { $('mm').value = ui.mm; $('glow').value = ui.glow; $('unlit').checked = ui.unlit; }
+
+  function render() {
+    leds.forEach((v, i) => cells[i].classList.toggle('on', !!v));
+    $('snippet').textContent = entryText(cleanName($('name').value || 'newGlyph'), leds);
+    renderNuimo();
+  }
+  $('name').addEventListener('input', render);
+
+  if (!builtIn.length) $('library').textContent = 'Could not load ../patterns.js — open this file from the repo\'s tools/ folder.';
+  else renderLibrary();
+  const battery = builtIn.find(g => g.name === 'battery');
+  if (battery) { setLeds(battery.leds); $('name').value = 'charging'; } else render();
+})();
+</script>
+</body>
+</html>

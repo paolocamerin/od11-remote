@@ -17,7 +17,7 @@
 const nuimo = require('./nuimo');
 const speaker = require('./speaker');
 const config = require('./config');
-const { PATTERNS, PATTERNS_BY_NAME } = require('./patterns');
+const { PATTERNS, PATTERNS_BY_NAME, batteryPatternName, BATTERY_FULL_AT, BATTERY_LOW_BELOW } = require('./patterns');
 
 // ── Crash-proofing / shutdown ─────────────────────────────────────────────
 // Belt-and-suspenders on top of nuimo.js's/speaker.js's own try/catch —
@@ -233,13 +233,20 @@ nuimo.emitter.on('release', () => {
     markInteraction();
 
     if (held >= LONG_PRESS_MS) {
-        // Long press → show battery icon (1.5s) → battery number
+        // Long press → battery icon matching the level (1.5s) → the number,
+        // or "FULL" when the battery is full and "CHRG" when it is nearly empty
         const battery = nuimo.getBatteryLevel();
         console.log('Battery:', battery, '%');
-        showFeedback(p('battery'));
+        showFeedback(p(batteryPatternName(battery)));
         setTimeout(() => {
             if (!ledReady) return;
-            nuimo.setNumber(battery != null ? battery : 0);
+            if (battery != null && battery >= BATTERY_FULL_AT) {
+                nuimo.setMatrix(p('full'));
+            } else if (battery != null && battery < BATTERY_LOW_BELOW) {
+                nuimo.setMatrix(p('charge'));
+            } else {
+                nuimo.setNumber(battery != null ? battery : 0);
+            }
         }, 1500);
     } else {
         // Short press — first press after connect or idle is always a wake

@@ -22,12 +22,13 @@ process.argv.push('--ip=192.0.2.1');
 
 /** Everything drawn on the matrix: numbers as numbers, patterns by name. */
 const draws = [];
+let batteryLevel = 86;
 
 const nuimo = {
     emitter: new EventEmitter(),
     initialiseNuimo() {},
     shutdown: async () => {},
-    getBatteryLevel: () => 86,
+    getBatteryLevel: () => batteryLevel,
     setMatrix(leds) {
         const pattern = PATTERNS.find((p) => p.leds === leds);
         draws.push(pattern ? pattern.name : 'unknown');
@@ -152,13 +153,44 @@ test('touch and fly gestures show their icons', async () => {
     assert.deepEqual(draws, ['longTouchTop', 'flyProximity']);
 });
 
-test('long press shows the battery icon, then the battery level', async () => {
+async function longPress() {
     resetDraws();
     nuimo.emitter.emit('press');
     await sleep(650);
     nuimo.emitter.emit('release');
     await sleep(1600);
-    assert.deepEqual(draws, ['battery', 86]);
+}
+
+test('long press shows the battery icon, then the battery level', async () => {
+    batteryLevel = 86;
+    await longPress();
+    assert.deepEqual(draws, ['almostFullBattery', 86]);
+});
+
+test('long press picks the battery icon for the level', async () => {
+    for (const [level, icon] of [
+        [5, 'oneThirdBattery'], [33, 'oneThirdBattery'],
+        [34, 'twoThirdsBattery'], [66, 'twoThirdsBattery'],
+        [67, 'almostFullBattery'], [99, 'almostFullBattery'],
+    ]) {
+        batteryLevel = level;
+        await longPress();
+        assert.deepEqual(draws, [icon, level], 'level ' + level);
+    }
+});
+
+test('long press on a full battery shows "full" instead of the number', async () => {
+    batteryLevel = 100;
+    await longPress();
+    assert.deepEqual(draws, ['fullBattery', 'full']);
+});
+
+test('long press on a nearly empty battery shows "charge" instead of the number', async () => {
+    for (const level of [0, 4]) {
+        batteryLevel = level;
+        await longPress();
+        assert.deepEqual(draws, ['battery', 'charge'], 'level ' + level);
+    }
 });
 
 test.after(() => {
