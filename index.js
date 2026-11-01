@@ -2,14 +2,14 @@
  * OD-11 remote: Nuimo controller + OD-11 speaker integration.
  *
  * Interaction model:
- *   - On connect:       powerOnMatrix icon
+ *   - On connect:       "hello" glyph
  *   - Rotate:           volume up/down; number shown instantly, then corrected to the
  *                       speaker's real volume once rotation settles. Shows ✕ instead
  *                       while no speaker is connected (so "no number" = not working).
- *   - Short press:      toggle play/pause; show play/pause icon
+ *   - Short press:      first press shows a "ready" glyph, a second press (within 3 s) toggles
+ *                       play/pause and shows the play/pause icon; ? if it isn't possible
  *   - Long press ≥600ms: show battery icon (1.5s) → battery level number
- *   - 5-min idle:       first button press shows diamond, skips play/pause
- *   - Touch/swipe/fly:  show feedback icon (no functional effect)
+ *   - Touch/swipe/fly:  nothing (no action yet)
  *   - --debug mode:     longTouchBottom toggles pattern browser
  *                         (rotate cycles patterns, longTouchBottom again exits)
  */
@@ -71,16 +71,21 @@ let shownVolume = null;
 const DISCONNECTED_FEEDBACK_MS = 1000;
 let lastDisconnectedFeedback = 0;
 
-/** Timestamp of last user interaction (for 5-min idle detection) */
+/** Timestamp of last user interaction (lets a newer gesture take over the display) */
 let lastInteractionTime = Date.now();
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** Long-press threshold */
 const LONG_PRESS_MS = 600;
 let buttonPressTime = null;
 
-/** First press after connect/reconnect is always a wake, not play/pause */
-let hasWoken = false;
+/**
+ * Play/pause takes two presses: the first shows READY_GLYPH ("I can do something"),
+ * the second, within ARM_WINDOW_MS and with no other gesture in between, does it.
+ * Where play/pause isn't possible, a press shows ? straight away.
+ */
+const READY_GLYPH = 'control';
+const ARM_WINDOW_MS = 3000;
+let armedUntil = 0;
 
 /** Pattern browser (debug mode only) */
 let patternBrowserActive = false;
@@ -131,12 +136,10 @@ function updateDisplay() {
     showVolume(surrogateVolume);
 }
 
+/** Any gesture counts as an interaction, and cancels a pending play/pause arming. */
 function markInteraction() {
     lastInteractionTime = Date.now();
-}
-
-function isIdle() {
-    return (Date.now() - lastInteractionTime) >= IDLE_TIMEOUT_MS;
+    armedUntil = 0;
 }
 
 
@@ -181,9 +184,8 @@ function settleVolume() {
 
 nuimo.emitter.on('ledReady', () => {
     ledReady = true;
-    hasWoken = false;
     console.log('Nuimo LED ready');
-    showFeedback(p('powerOnMatrix'));
+    showFeedback(p('hello'));
 });
 
 nuimo.emitter.on('disconnect', () => {
@@ -230,6 +232,7 @@ nuimo.emitter.on('release', () => {
     if (buttonPressTime === null) return;
     const held = Date.now() - buttonPressTime;
     buttonPressTime = null;
+    const wasArmed = Date.now() < armedUntil;
     markInteraction();
 
     if (held >= LONG_PRESS_MS) {
@@ -249,18 +252,22 @@ nuimo.emitter.on('release', () => {
             }
         }, 1500);
     } else {
-        // Short press — first press after connect or idle is always a wake
-        if (!hasWoken || isIdle()) {
-            hasWoken = true;
-            console.log('Wake press — showing diamond');
-            showFeedback(p('diamond'));
+        // Short press → play/pause, but only on a second press: the first just says it's possible
+        if (!speaker.canTogglePlayPause()) {
+            // Not connected, or the source can't pause (e.g. Optical) — see appletv.js (not wired in yet)
+            console.log('Play/pause not available');
+            showFeedback(p('nuimo'));
             return;
         }
-        // Toggle play/pause — route based on source capabilities
+        if (!wasArmed) {
+            armedUntil = Date.now() + ARM_WINDOW_MS;
+            console.log('Play/pause ready — press again to confirm');
+            showFeedback(p(READY_GLYPH));
+            return;
+        }
         const newPlaying = speaker.togglePlayPause();
         if (newPlaying === null) {
-            // Source doesn't support pause (e.g. Optical) — see appletv.js (not wired in yet)
-            showFeedback(p('questionMarkMatrix'));
+            showFeedback(p('nuimo')); // lost the capability between the two presses
         } else {
             console.log('Playback:', newPlaying ? 'playing' : 'paused');
             showFeedback(p(newPlaying ? 'playMatrix' : 'pauseMatrix'));
@@ -268,44 +275,23 @@ nuimo.emitter.on('release', () => {
     }
 });
 
-// ── Touch / swipe feedback ─────────────────────────────────────────────────
+// ── Touch / swipe / fly ────────────────────────────────────────────────────
 
-// Swipe and touch gestures have a pattern of the same name in patterns.js.
-
-nuimo.emitter.on('swipe', (gesture) => {
-    markInteraction();
-    showFeedback(p(gesture) || p('questionMarkMatrix'));
-});
+// Swipe, touch and fly gestures have no action yet, so they do nothing: no icon,
+// and they don't cancel a pending play/pause either. (The nuimo.js events and the
+// matching icons in patterns.js are kept for when they get a job.)
+// The one exception is --debug mode, where a long touch on the bottom opens the
+// LED pattern browser.
 
 nuimo.emitter.on('touch', (gesture) => {
+    if (!config.debug || gesture !== 'longTouchBottom') return;
     markInteraction();
-    if (config.debug) {
-        // longTouchBottom toggles pattern browser
-        if (gesture === 'longTouchBottom') {
-            patternBrowserActive = !patternBrowserActive;
-            console.log('Pattern browser:', patternBrowserActive ? 'ON' : 'OFF');
-            if (patternBrowserActive) {
-                patternBrowserIndex = 0;
-                nuimo.setMatrix(PATTERNS[patternBrowserIndex].leds);
-            } else {
-                updateDisplay();
-            }
-            return;
-        }
+    patternBrowserActive = !patternBrowserActive;
+    console.log('Pattern browser:', patternBrowserActive ? 'ON' : 'OFF');
+    if (patternBrowserActive) {
+        patternBrowserIndex = 0;
+        nuimo.setMatrix(PATTERNS[patternBrowserIndex].leds);
+    } else {
+        updateDisplay();
     }
-    if (patternBrowserActive) return; // suppress other touch feedback in browser
-    showFeedback(p(gesture) || p('questionMarkMatrix'));
-});
-
-// ── Fly feedback ───────────────────────────────────────────────────────────
-
-nuimo.emitter.on('fly', (dir) => {
-    markInteraction();
-    if (patternBrowserActive) return;
-    const iconMap = {
-        left:   'flyLeft',
-        right:  'flyRight',
-        updown: 'flyProximity',
-    };
-    showFeedback(p(iconMap[dir] || 'questionMarkMatrix'));
 });

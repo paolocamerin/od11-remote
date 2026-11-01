@@ -236,6 +236,15 @@ function canCurrentSourcePause() {
 }
 
 /**
+ * Whether a play/pause press would do anything right now: the speaker is
+ * connected and its current source supports pausing.
+ * @returns {boolean}
+ */
+function canTogglePlayPause() {
+    return isConnected() && canCurrentSourcePause();
+}
+
+/**
  * Toggle play/pause on the speaker.
  * Returns the new playing state (true/false), or null if not connected or the
  * current source does not support pause (e.g. line in, optical).
@@ -271,4 +280,4 @@ function shutdown() {
     }
 }
 
-module.exports = { initialiseSpeaker, changeVolume, isConnected, getVolume, togglePlayPause, speakerEmitter, shutdown };
+module.exports = { initialiseSpeaker, changeVolume, isConnected, getVolume, togglePlayPause, canTogglePlayPause, speakerEmitter, shutdown };

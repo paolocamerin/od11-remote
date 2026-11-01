@@ -24,11 +24,11 @@ Nuimo  ──Bluetooth LE──►  od11-remote (Pi)  ──WebSocket──►  
 | Action | Result |
 |---|---|
 | **Rotate** | Volume up/down (shows ✕ if no speaker is connected) |
-| **Short press** | Play/pause. After 5 min idle, the first press only wakes the display (◆) |
+| **Short press** | Play/pause takes two presses: the first shows **CTRL** ("ready"), a second press within 3 s does it. Any other gesture in between cancels. Shows **NUIMO** straight away if play/pause isn't possible |
 | **Long press** (≥ 0.6 s) | Show Nuimo battery icon, then battery % |
-| **Touch / swipe / fly** | Shows a feedback icon (no action yet) |
+| **Touch / swipe / fly** | Nothing for now (no action yet) |
 
-Play/pause only works for sources that support it (AirPlay, Spotify, Playlist). On Line in / Optical, a press shows **?**.
+Play/pause only works for sources that support it (AirPlay, Spotify, Playlist). On Line in / Optical, a press shows **NUIMO**.
 
 ## Requirements
 

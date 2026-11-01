@@ -36,7 +36,7 @@ const nuimo = {
     setNumber(value) { draws.push(value); },
 };
 
-const speakerState = { connected: false, vol: 0 };
+const speakerState = { connected: false, vol: 0, canPause: false, toggles: 0 };
 const sentDeltas = [];
 
 const speaker = {
@@ -46,7 +46,8 @@ const speaker = {
     isConnected: () => speakerState.connected,
     getVolume: () => ({ vol: speakerState.vol, max: 100 }),
     changeVolume(amount) { sentDeltas.push(amount); },
-    togglePlayPause: () => true,
+    canTogglePlayPause: () => speakerState.canPause,
+    togglePlayPause() { speakerState.toggles++; return true; },
 };
 
 function stub(name, exports) {
@@ -79,9 +80,9 @@ function resetDraws() {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
-test('Nuimo ready shows the power-on icon', () => {
+test('Nuimo ready shows the hello glyph', () => {
     nuimo.emitter.emit('ledReady');
-    assert.deepEqual(draws, ['powerOnMatrix']);
+    assert.deepEqual(draws, ['hello']);
 });
 
 test('rotating with no speaker connected shows ✕ once and sends nothing', () => {
@@ -120,9 +121,9 @@ test('another gesture after turning is not overwritten by the correction', async
     resetDraws();
     rotate(1);
     await sleep(50);
-    nuimo.emitter.emit('swipe', 'swipeLeft');
+    await shortPress();
     await sleep(SETTLE_WAIT_MS);
-    assert.deepEqual(draws, [35, 'swipeLeft']);
+    assert.deepEqual(draws, [35, 'nuimo']);
 });
 
 test('after a speaker drop it shows ✕, then resumes from the fresh volume', async () => {
@@ -145,13 +146,21 @@ test('a volume change from elsewhere is the base for the next turn', async () =>
     assert.equal(draws[0], 51);
 });
 
-test('touch and fly gestures show their icons', async () => {
+test('touch, swipe and fly gestures do nothing', async () => {
     await sleep(SETTLE_WAIT_MS);
     resetDraws();
     nuimo.emitter.emit('touch', 'longTouchTop');
+    nuimo.emitter.emit('swipe', 'swipeLeft');
     nuimo.emitter.emit('fly', 'updown');
-    assert.deepEqual(draws, ['longTouchTop', 'flyProximity']);
+    assert.deepEqual(draws, []);
 });
+
+async function shortPress() {
+    nuimo.emitter.emit('press');
+    await sleep(50);
+    nuimo.emitter.emit('release');
+    await sleep(50);
+}
 
 async function longPress() {
     resetDraws();
@@ -191,6 +200,67 @@ test('long press on a nearly empty battery shows "charge" instead of the number'
         await longPress();
         assert.deepEqual(draws, ['battery', 'charge'], 'level ' + level);
     }
+});
+
+test('short press where play/pause is impossible shows the nuimo glyph and does nothing', async () => {
+    resetDraws();
+    speakerState.canPause = false;
+    speakerState.toggles = 0;
+    await shortPress();
+    await shortPress();
+    assert.deepEqual(draws, ['nuimo', 'nuimo']);
+    assert.equal(speakerState.toggles, 0);
+});
+
+test('short press where play/pause is possible: first press only says so, second does it', async () => {
+    resetDraws();
+    speakerState.canPause = true;
+    speakerState.toggles = 0;
+    await shortPress();
+    assert.deepEqual(draws, ['control']);
+    assert.equal(speakerState.toggles, 0);
+    await shortPress();
+    assert.deepEqual(draws, ['control', 'playMatrix']);
+    assert.equal(speakerState.toggles, 1);
+    await shortPress(); // done: the next press arms again instead of toggling
+    assert.deepEqual(draws, ['control', 'playMatrix', 'control']);
+    assert.equal(speakerState.toggles, 1);
+});
+
+test('another gesture between the two presses cancels the arming', async () => {
+    resetDraws();
+    speakerState.toggles = 0;
+    await sleep(3100); // let any earlier arming lapse
+    await shortPress();
+    rotate(1);
+    await shortPress();
+    assert.equal(draws.length, 3);
+    assert.equal(draws[0], 'control');
+    assert.equal(draws[2], 'control');
+    assert.equal(speakerState.toggles, 0);
+});
+
+test('a swipe between the two presses does not cancel the arming', async () => {
+    resetDraws();
+    speakerState.toggles = 0;
+    await sleep(3100);
+    await shortPress();
+    nuimo.emitter.emit('swipe', 'swipeLeft');
+    await shortPress();
+    assert.deepEqual(draws, ['control', 'playMatrix']);
+    assert.equal(speakerState.toggles, 1);
+    await shortPress(); // leave it armed-and-fired, so the next test starts clean
+});
+
+test('the second press is too late after the arming window', async () => {
+    resetDraws();
+    speakerState.toggles = 0;
+    await sleep(3100);
+    await shortPress();
+    await sleep(3100);
+    await shortPress();
+    assert.deepEqual(draws, ['control', 'control']);
+    assert.equal(speakerState.toggles, 0);
 });
 
 test.after(() => {

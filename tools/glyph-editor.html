@@ -119,7 +119,15 @@
   const get = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
   const put = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
 
-  let saved = get(STORE, []);                      // [{name, leds}]
+  const key = a => a.join('');
+  const builtInKeys = new Set(builtIn.map(g => key(g.leds)));
+  let saved = get(STORE, []);                      // [{name, leds}] — only glyphs not (yet) in patterns.js
+  // Save order, newest first, as LED-pattern keys so it survives a glyph moving into patterns.js.
+  let recent = get(STORE + ':recent', null) || saved.slice().reverse().map(g => key(g.leds));
+  if (builtIn.length) {                            // don't prune if patterns.js failed to load
+    saved = saved.filter(g => !builtInKeys.has(key(g.leds)));
+    put(STORE, saved); put(STORE + ':recent', recent);
+  }
   let leds = new Array(N * N).fill(0);
   let hover = null;                                // leds being previewed from the library
   let paintValue = 1, painting = false;
@@ -173,7 +181,8 @@
     if (builtIn.some(g => g.name === name) && !confirm('"' + name + '" is already in patterns.js. Save a separate copy here anyway?')) return;
     const i = saved.findIndex(g => g.name === name);
     if (i >= 0) saved[i].leds = leds.slice(); else saved.push({ name, leds: leds.slice() });
-    put(STORE, saved); renderLibrary();
+    recent = [key(leds)].concat(recent.filter(k => k !== key(leds)));
+    put(STORE, saved); put(STORE + ':recent', recent); renderLibrary();
   };
   $('delete').onclick = () => {
     const name = cleanName($('name').value);
@@ -199,8 +208,13 @@
   }
   function renderLibrary() {
     const lib = $('library'); lib.innerHTML = '';
-    saved.forEach(g => lib.appendChild(thumb(g, true)));
-    builtIn.forEach(g => lib.appendChild(thumb(g, false)));
+    // Newest to oldest, left to right: recently saved first, then everything else
+    // from the end of patterns.js backwards (later entries are the newer ones).
+    const rank = g => { const r = recent.indexOf(key(g.leds)); return r < 0 ? Infinity : r; };
+    const items = saved.map(g => ({ g, custom: true }))
+      .concat(builtIn.slice().reverse().map(g => ({ g, custom: false })));
+    items.sort((a, b) => rank(a.g) - rank(b.g));
+    items.forEach(({ g, custom }) => lib.appendChild(thumb(g, custom)));
   }
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderLibrary);
 
