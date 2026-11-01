@@ -227,25 +227,6 @@
     max-width: 560px;
   }
 
-  .slider {
-    display: grid;
-    grid-template-columns: 130px 1fr 60px;
-    align-items: center;
-    gap: 8px;
-    margin-top: 8px;
-  }
-
-  .slider output {
-    text-align: right;
-    font-size: 14px;
-    font-variant-numeric: tabular-nums;
-    color: var(--ink);
-  }
-
-  .options {
-    margin-top: 10px;
-  }
-
   /* ── Library strip ───────────────────────────────────────────────────── */
 
   #libraryBar {
@@ -409,25 +390,9 @@
       <svg id="nuimo" viewBox="0 0 400 400" role="img" aria-label="Nuimo mockup"></svg>
     </div>
 
-    <div class="slider">
-      <label for="mm">Matrix width</label>
-      <input type="range" id="mm" min="20" max="35" step="1" value="30">
-      <output id="mmOut"></output>
-    </div>
-
-    <div class="slider">
-      <label for="glow">Glow</label>
-      <input type="range" id="glow" min="0" max="10" step="1" value="5">
-      <output id="glowOut"></output>
-    </div>
-
-    <div class="row options">
-      <label><input type="checkbox" id="unlit" checked> show unlit LEDs</label>
-    </div>
-
     <p class="hint">
-      Body diameter 78 mm (published figure); the inner face circle is set to 50 mm.
-      Adjust the matrix width to match your Nuimo (max 35 mm fits inside the circle).
+      Body diameter 78 mm (published figure); the inner face circle is 50 mm and the
+      LED matrix is 18 mm wide.
     </p>
   </section>
 
@@ -462,7 +427,6 @@
 
   const STORAGE_KEY        = 'nuimo-glyph-editor:v1';          // glyphs saved in this browser
   const STORAGE_KEY_RECENT = STORAGE_KEY + ':recent';          // save order, newest first
-  const STORAGE_KEY_UI     = STORAGE_KEY + ':ui';              // slider and checkbox settings
 
   const byId = (id) => document.getElementById(id);
 
@@ -786,6 +750,8 @@
 
   const BODY_MM = 78;        // whole device (published figure)
   const FACE_MM = 50;        // dark circle that holds the matrix
+  const MATRIX_MM = 18;      // width of the 9x9 LED matrix
+  const GLOW = 12;           // glow strength: blur radius is GLOW / 2, opacity rises with it
   const SVG_SIZE = 400;      // viewBox is SVG_SIZE x SVG_SIZE
   const PX_PER_MM = SVG_SIZE / (BODY_MM + 2);   // 1 mm of margin on each side
 
@@ -819,12 +785,8 @@
   }
 
   function renderNuimo() {
-    const matrixMm = Number(byId('mm').value);
-    const glow = Number(byId('glow').value);
-    const showUnlit = byId('unlit').checked;
-
-    byId('mmOut').textContent = matrixMm + ' mm';
-    byId('glowOut').textContent = glow;
+    const matrixMm = MATRIX_MM;
+    const glow = GLOW;
 
     const shownLeds = previewLeds || leds;
 
@@ -856,7 +818,7 @@
 
       if (shownLeds[index]) {
         litCircles += circle(x, y, litRadius);
-      } else if (showUnlit) {
+      } else {
         svg += circle(x, y, unlitRadius, 'fill="#121316"');
       }
     }
@@ -869,28 +831,6 @@
 
     byId('nuimo').innerHTML = svg;
   }
-
-  // Remember the slider and checkbox settings between visits.
-  const mockupControlIds = ['mm', 'glow', 'unlit'];
-
-  mockupControlIds.forEach((id) => {
-    byId(id).addEventListener('input', () => {
-      renderNuimo();
-      store(STORAGE_KEY_UI, {
-        mm: byId('mm').value,
-        glow: byId('glow').value,
-        unlit: byId('unlit').checked,
-      });
-    });
-  });
-
-  const storedSettings = loadStored(STORAGE_KEY_UI, null);
-  if (storedSettings) {
-    byId('mm').value = storedSettings.mm;
-    byId('glow').value = storedSettings.glow;
-    byId('unlit').checked = storedSettings.unlit;
-  }
-
 
   // ════════════════════════════════════════════════════════════════════════
   // Putting it together
