@@ -36,7 +36,7 @@ const nuimo = {
     setNumber(value) { draws.push(value); },
 };
 
-const speakerState = { connected: false, vol: 0, canPause: false, toggles: 0 };
+const speakerState = { connected: false, vol: 0, canPause: false, toggles: 0, playing: false };
 const sentDeltas = [];
 
 const speaker = {
@@ -47,7 +47,7 @@ const speaker = {
     getVolume: () => ({ vol: speakerState.vol, max: 100 }),
     changeVolume(amount) { sentDeltas.push(amount); },
     canTogglePlayPause: () => speakerState.canPause,
-    togglePlayPause() { speakerState.toggles++; return true; },
+    togglePlayPause() { speakerState.toggles++; speakerState.playing = !speakerState.playing; return speakerState.playing; },
 };
 
 function stub(name, exports) {
@@ -243,6 +243,7 @@ test('another gesture between the two presses cancels the arming', async () => {
 test('a swipe between the two presses does not cancel the arming', async () => {
     resetDraws();
     speakerState.toggles = 0;
+    speakerState.playing = false;
     await sleep(3100);
     await shortPress();
     nuimo.emitter.emit('swipe', 'swipeLeft');
@@ -261,6 +262,24 @@ test('the second press is too late after the arming window', async () => {
     await shortPress();
     assert.deepEqual(draws, ['control', 'control']);
     assert.equal(speakerState.toggles, 0);
+});
+
+test('presses alternate between the play and pause icons', async () => {
+    await sleep(3100);
+    speakerState.canPause = true;
+    speakerState.playing = false;
+    resetDraws();
+    for (let i = 0; i < 2; i++) {
+        await shortPress();   // arm
+        await shortPress();   // do it
+    }
+    assert.deepEqual(draws, ['control', 'playMatrix', 'control', 'pauseMatrix']);
+});
+
+test('when the speaker undoes a play/pause, the nuimo glyph is shown', async () => {
+    resetDraws();
+    speaker.speakerEmitter.emit('playbackIneffective');
+    assert.deepEqual(draws, ['nuimo']);
 });
 
 test.after(() => {

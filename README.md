@@ -28,7 +28,9 @@ Nuimo  ──Bluetooth LE──►  od11-remote (Pi)  ──WebSocket──►  
 | **Long press** (≥ 0.6 s) | Show Nuimo battery icon, then battery % |
 | **Touch / swipe / fly** | Nothing for now (no action yet) |
 
-Play/pause only works for sources that support it (AirPlay, Spotify, Playlist). On Line in / Optical, a press shows **NUIMO**.
+Play/pause only works for sources the speaker can really pause (Spotify, Playlist, and AirPlay from a sender that honours it). On Line in / Optical, a press shows **NUIMO**.
+
+AirPlay from an **Apple TV** (e.g. YouTube) can't be paused this way: the speaker is only the receiver, so stopping it silences the speaker while the video keeps playing. The app notices when the speaker undoes the command straight away, turns the audio back on, shows **NUIMO**, and stops offering play/pause until the source changes. Controlling the Apple TV itself is a separate, not-yet-built step (`appletv.js`).
 
 ## Requirements
 

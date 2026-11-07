@@ -21,6 +21,19 @@ let pingInterval = null;
 let isPlaying = false;
 let currentSourceId = null;
 let sourcesMap = {};
+
+/**
+ * Some sources can't really be paused from here. With an Apple TV streaming over
+ * AirPlay, the speaker is only the receiver: playback_stop silences the speaker but
+ * the sender keeps streaming, so the speaker reports "playing" again right away
+ * (and the video carries on). A report that contradicts our own command within
+ * this window is that echo.
+ */
+const COMMAND_ECHO_WINDOW_MS = 2000;
+/** The last play/pause command we sent: { playing, at }. */
+let pendingCommand = null;
+/** Source id whose play/pause proved ineffective; cleared when the source changes. */
+let ineffectiveSourceId = null;
 let isShuttingDown = false;
 
 /** IPs to try, in order: configured ones first, then any learned from the group. */
@@ -49,6 +62,8 @@ function connect() {
         opened = true;
         failedAttempts = 0;
         unansweredPings = 0;
+        pendingCommand = null;
+        ineffectiveSourceId = null;
         console.log('Connected to speaker at', ip);
 
         // Join global and group to receive state updates
@@ -176,14 +191,40 @@ function parseUpdate(item) {
     if (item.update === 'playback_state_changed' && typeof item.playing === 'boolean') {
         console.log('[speaker] playback_state_changed:', item.playing);
         isPlaying = item.playing;
+        const command = pendingCommand;
+        if (command && Date.now() - command.at <= COMMAND_ECHO_WINDOW_MS && item.playing !== command.playing) {
+            handleIneffectiveCommand(command);
+        }
     }
     if (item.update === 'group_input_source_changed' && typeof item.source === 'number') {
+        if (item.source !== currentSourceId) {
+            ineffectiveSourceId = null;
+            pendingCommand = null;
+        }
         currentSourceId = item.source;
         const src = sourcesMap[currentSourceId];
         const name = src ? src.name : 'unknown';
         const canPause = src ? src.supports_pause : false;
         console.log('[speaker] source:', name, '(id=' + currentSourceId + ', supports_pause=' + canPause + ')');
     }
+}
+
+/**
+ * The speaker undid our play/pause command straight away (see COMMAND_ECHO_WINDOW_MS).
+ * Stop offering play/pause for this source, and if we had silenced the speaker, turn
+ * its output back on so the user isn't left with a muted speaker and a video still playing.
+ */
+function handleIneffectiveCommand(command) {
+    pendingCommand = null;
+    ineffectiveSourceId = currentSourceId;
+    console.log('[togglePlayPause] speaker undid', command.playing ? 'playback_start' : 'playback_stop',
+        '— source', currentSourceId, 'can\'t be controlled from here');
+    if (!command.playing && isConnected()) {
+        console.log('[togglePlayPause] restoring audio: sending playback_start');
+        socket.send(JSON.stringify({ action: 'playback_start' }));
+        isPlaying = true;
+    }
+    speakerEmitter.emit('playbackIneffective');
 }
 
 /**
@@ -226,13 +267,31 @@ function getVolume() {
 }
 
 /**
- * Whether the current source supports pause (line in / optical don't).
- * Unknown source → assume it does.
+ * Whether the current source can be paused from here: it's a known source that
+ * supports pause (line in / optical don't) and hasn't proved ineffective
+ * (AirPlay from an Apple TV, see COMMAND_ECHO_WINDOW_MS). Unknown source → no.
  * @returns {boolean}
  */
 function canCurrentSourcePause() {
     const src = currentSourceId !== null ? sourcesMap[currentSourceId] : null;
-    return src ? src.supports_pause !== false : true;
+    if (!src) return false;
+    if (currentSourceId === ineffectiveSourceId) return false;
+    return src.supports_pause !== false;
+}
+
+/**
+ * The current source, or null if unknown.
+ * @returns {{id: number, name: string, supportsPause: boolean, controllable: boolean}|null}
+ */
+function getSource() {
+    const src = currentSourceId !== null ? sourcesMap[currentSourceId] : null;
+    if (!src) return null;
+    return {
+        id: currentSourceId,
+        name: src.name,
+        supportsPause: src.supports_pause !== false,
+        controllable: canCurrentSourcePause(),
+    };
 }
 
 /**
@@ -257,7 +316,7 @@ function togglePlayPause() {
     }
     if (!canCurrentSourcePause()) {
         const src = sourcesMap[currentSourceId];
-        console.log('[togglePlayPause] source does not support pause:', src.name || currentSourceId);
+        console.log('[togglePlayPause] source can\'t be paused from here:', src ? src.name : 'unknown source');
         return null;
     }
     const newPlaying = !isPlaying;
@@ -265,6 +324,7 @@ function togglePlayPause() {
     console.log('[togglePlayPause] sending:', JSON.stringify(payload), '(was isPlaying=' + isPlaying + ')');
     socket.send(JSON.stringify(payload));
     isPlaying = newPlaying; // optimistic — overridden by next playback_state_changed from speaker
+    pendingCommand = { playing: newPlaying, at: Date.now() };
     return newPlaying;
 }
 
@@ -280,4 +340,4 @@ function shutdown() {
     }
 }
 
-module.exports = { initialiseSpeaker, changeVolume, isConnected, getVolume, togglePlayPause, canTogglePlayPause, speakerEmitter, shutdown };
+module.exports = { initialiseSpeaker, changeVolume, isConnected, getVolume, getSource, togglePlayPause, canTogglePlayPause, speakerEmitter, shutdown };

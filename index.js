@@ -158,6 +158,13 @@ speaker.speakerEmitter.on('volumeChange', ({ vol, max }) => {
     surrogateVolume = vol;
 });
 
+// The speaker undid a play/pause (e.g. an Apple TV still streaming over AirPlay): say
+// so, and from now on a press shows NUIMO because play/pause isn't possible here.
+speaker.speakerEmitter.on('playbackIneffective', () => {
+    console.log('Play/pause has no effect on this source');
+    showFeedback(p('nuimo'));
+});
+
 speaker.speakerEmitter.on('disconnected', () => {
     // The last known volume is no longer trustworthy — wait for a fresh report.
     volumeInitialised = false;
